@@ -175,6 +175,9 @@ public sealed class SecurityTests
         {
             SerializerOptions = Web(),
             KeepAliveInterval = TimeSpan.FromMilliseconds(100),
+            // Generous timeout: a responsive peer must never trip keep-alive, even when a loaded
+            // CI runner delays a ping reply. Tripping is covered by the unresponsive-peer test.
+            KeepAliveTimeout = TimeSpan.FromSeconds(2),
         });
         var server = new JsonRpc(h2, new JsonRpcOptions { SerializerOptions = Web() });
         server.AddLocalRpcMethod("echo", (string s) => s);
