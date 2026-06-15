@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/sebastienros/curlyrpc/main/assets/banner.png" alt="CurlyRpc" width="640">
-</p>
+![CurlyRpc](https://raw.githubusercontent.com/sebastienros/curlyrpc/main/assets/banner.png)
 
 # CurlyRpc
 
