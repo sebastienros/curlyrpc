@@ -1,0 +1,34 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!--
+    The core CurlyRpc library has a single runtime dependency:
+    Microsoft.Extensions.Logging.Abstractions (AOT- and trim-safe). All other versions
+    below are tooling-only: the bundled source generator, plus the test, sample, and
+    benchmark projects.
+  -->
+  <ItemGroup>
+    <!-- Core runtime dependency: ILogger bridge -->
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+
+    <!-- Source generator (bundled into the CurlyRpc package as an analyzer) -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+
+    <!-- Tests: Microsoft Testing Platform v2 (MSTest runner) -->
+    <PackageVersion Include="MSTest.TestAdapter" Version="3.6.4" />
+    <PackageVersion Include="MSTest.TestFramework" Version="3.6.4" />
+    <PackageVersion Include="Microsoft.Testing.Platform" Version="1.4.3" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="17.12.6" />
+
+    <!-- Generator tests -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp.SourceGenerators.Testing.MSTest" Version="1.1.2" />
+
+    <!-- Benchmarks (dev only) -->
+    <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+
+</Project>

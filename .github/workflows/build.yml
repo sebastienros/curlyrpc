@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+    - 'README.md'
+    - 'doc/**'
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    env:
+        DOTNET_NOLOGO: true
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+        TESTINGPLATFORM_TELEMETRY_OPTOUT: 1
+
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+        global-json-file: global.json
+
+    - name: Test
+      run: dotnet test CurlyRpc.slnx -c Release

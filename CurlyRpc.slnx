@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CurlyRpc/CurlyRpc.csproj" />
+    <Project Path="src/CurlyRpc.SourceGenerator/CurlyRpc.SourceGenerator.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/CurlyRpc.Tests/CurlyRpc.Tests.csproj" />
+    <Project Path="test/CurlyRpc.AotSmoke/CurlyRpc.AotSmoke.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/CurlyRpc.Sample/CurlyRpc.Sample.csproj" />
+  </Folder>
+  <Folder Name="/solution items/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Build.targets" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="nuget.config" />
+    <File Path="README.md" />
+  </Folder>
+</Solution>

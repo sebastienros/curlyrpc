@@ -1,0 +1,63 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+    - 'README.md'
+    - 'doc/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    env:
+        DOTNET_NOLOGO: true
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+        TESTINGPLATFORM_TELEMETRY_OPTOUT: 1
+
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+        global-json-file: global.json
+
+    - name: Version
+      run: dotnet --version
+
+    - name: Test
+      run: dotnet test CurlyRpc.slnx -c Release
+
+  aot-smoke:
+
+    runs-on: ubuntu-latest
+    env:
+        DOTNET_NOLOGO: true
+        DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: |
+          8.0.x
+          10.0.x
+        global-json-file: global.json
+
+    - name: Install AOT prerequisites
+      run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+    - name: Publish AOT smoke app
+      run: dotnet publish test/CurlyRpc.AotSmoke/CurlyRpc.AotSmoke.csproj -c Release -f net10.0 -r linux-x64 /p:PublishAot=true
+
+    - name: Run AOT smoke app
+      run: ./test/CurlyRpc.AotSmoke/bin/Release/net10.0/linux-x64/publish/CurlyRpc.AotSmoke

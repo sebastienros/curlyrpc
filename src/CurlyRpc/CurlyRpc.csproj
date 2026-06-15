@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <RootNamespace>CurlyRpc</RootNamespace>
+    <AssemblyName>CurlyRpc</AssemblyName>
+
+    <!-- AOT / trimming cleanliness -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Packaging -->
+    <PackageId>CurlyRpc</PackageId>
+    <Description>An AOT-friendly JSON-RPC 2.0 library for .NET. Full-duplex peer, pluggable framing, System.Text.Json, streaming, and built-in observability. Includes the optional client-proxy source generator and the Microsoft.Extensions.Logging bridge.</Description>
+    <PackageTags>json-rpc;jsonrpc;rpc;aot;system.text.json</PackageTags>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <!-- Package icon and readme -->
+  <ItemGroup>
+    <None Include="../../assets/icon.png" Pack="true" PackagePath="" Visible="false" />
+    <None Include="../../README.md" Pack="true" PackagePath="" Visible="false" />
+  </ItemGroup>
+
+  <!-- The only runtime dependency: the logging bridge forwards diagnostics to ILogger.
+       Microsoft.Extensions.Logging.Abstractions is AOT- and trim-safe. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <!-- Build the source generator and ship it inside this package as an analyzer asset.
+       ReferenceOutputAssembly=false keeps it out of the runtime closure; PrivateAssets=all
+       keeps its Roslyn dependency out of this package's dependency list. -->
+  <ItemGroup>
+    <ProjectReference Include="../CurlyRpc.SourceGenerator/CurlyRpc.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="_PackJsonRpcSourceGenerator" BeforeTargets="_GetPackageFiles">
+    <PropertyGroup>
+      <_JsonRpcGeneratorDll>$(MSBuildThisFileDirectory)../CurlyRpc.SourceGenerator/bin/$(Configuration)/netstandard2.0/CurlyRpc.SourceGenerator.dll</_JsonRpcGeneratorDll>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_JsonRpcGeneratorDll)')"
+           Text="Source generator not built at $(_JsonRpcGeneratorDll). Build the solution (or the generator project) before packing." />
+    <ItemGroup>
+      <None Include="$(_JsonRpcGeneratorDll)"
+            Pack="true"
+            PackagePath="analyzers/dotnet/cs"
+            Visible="false" />
+    </ItemGroup>
+  </Target>
+
+</Project>
