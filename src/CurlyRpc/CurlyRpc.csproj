@@ -17,7 +17,7 @@
     <!-- Packaging -->
     <PackageId>CurlyRpc</PackageId>
     <Description>An AOT-friendly JSON-RPC 2.0 library for .NET. Full-duplex peer, pluggable framing, System.Text.Json, streaming, and built-in observability. Includes the optional client-proxy source generator and the Microsoft.Extensions.Logging bridge.</Description>
-    <PackageTags>json-rpc;jsonrpc;rpc;aot;system.text.json</PackageTags>
+    <PackageTags>json;rpc;jsonrpc;json-rpc;JsonRpc;ipc;remoting;protocol;aot;trimming;source-generator;streaming;system.text.json</PackageTags>
     <PackageIcon>icon.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
