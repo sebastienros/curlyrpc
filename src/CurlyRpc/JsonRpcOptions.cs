@@ -39,6 +39,34 @@ public sealed class JsonRpcOptions
     public JsonRpcInboundMiddleware? InboundMiddleware { get; set; }
 
     /// <summary>
+    /// When <see langword="true"/>, outbound requests and notifications carry the ambient
+    /// <see cref="System.Diagnostics.Activity"/>'s W3C trace context (<c>traceparent</c>, and
+    /// <c>tracestate</c> when present) as members of the JSON-RPC envelope, and inbound dispatch restores
+    /// that context as the parent of the server-side <see cref="System.Diagnostics.Activity"/>. This links
+    /// the client and server spans into one distributed trace across the connection, matching the behavior
+    /// of StreamJsonRpc's <c>ActivityTracingStrategy</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The context is only emitted when there is a current <see cref="System.Diagnostics.Activity"/> using
+    /// the W3C id format (the .NET default, see <see cref="System.Diagnostics.Activity.DefaultIdFormat"/>);
+    /// the legacy hierarchical format has no <c>traceparent</c> representation and is skipped. The members
+    /// use the standard W3C field names defined by
+    /// <see href="https://www.w3.org/TR/trace-context/">the W3C Trace Context specification</see>, so a peer
+    /// that does not understand them ignores them. The option is therefore wire backward- and
+    /// forward-compatible and may be enabled on only one end.
+    /// </para>
+    /// <para>
+    /// The same flag gates both directions: injecting context on outbound calls and honoring it on inbound
+    /// dispatch. It defaults to <see langword="false"/> so the wire envelope is unchanged unless
+    /// cross-process trace correlation is explicitly requested. Internal control messages
+    /// (<c>$/cancelRequest</c>, <c>$/ping</c>, and the enumerator-streaming notifications) never carry the
+    /// context.
+    /// </para>
+    /// </remarks>
+    public bool PropagateTraceContext { get; set; }
+
+    /// <summary>
     /// The maximum size, in bytes, of a single inbound message. A peer that declares (or streams) a
     /// larger frame faults the connection with a <see cref="JsonRpcMessageTooLargeException"/> before
     /// the body is buffered, preventing a memory-exhaustion denial of service. <c>0</c> (the default)

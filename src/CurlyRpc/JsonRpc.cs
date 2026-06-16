@@ -26,6 +26,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     private readonly JsonRpcInboundMiddleware? _inboundMiddleware;
     private readonly SemaphoreSlim? _inboundThrottle;
     private readonly bool _exposeExceptionDetails;
+    private readonly bool _propagateTraceContext;
     private readonly TimeSpan _keepAliveInterval;
     private readonly TimeSpan _keepAliveTimeout;
 
@@ -66,6 +67,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
             ? new SemaphoreSlim(_options.MaximumConcurrentRequests, _options.MaximumConcurrentRequests)
             : null;
         _exposeExceptionDetails = _options.ExposeExceptionDetails;
+        _propagateTraceContext = _options.PropagateTraceContext;
         _keepAliveInterval = _options.KeepAliveInterval > TimeSpan.Zero ? _options.KeepAliveInterval : TimeSpan.Zero;
         _keepAliveTimeout = _options.KeepAliveTimeout > TimeSpan.Zero ? _options.KeepAliveTimeout : _keepAliveInterval;
     }
@@ -278,7 +280,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
         JsonElement? @params = SerializePositionalParameters(arguments);
-        return SendNotificationAsync(method, @params).AsTask();
+        return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 
     /// <summary>
@@ -288,7 +290,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
         JsonElement? @params = SerializeParameterObject(argument);
-        return SendNotificationAsync(method, @params).AsTask();
+        return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 
     /// <inheritdoc />

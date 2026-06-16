@@ -54,6 +54,9 @@ public sealed partial class JsonRpc
             try
             {
                 var wire = new JsonRpcRequestWire { Id = new RequestId(id), Method = method, Params = @params };
+                CaptureOutboundTraceContext(out string? traceParent, out string? traceState);
+                wire.TraceParent = traceParent;
+                wire.TraceState = traceState;
                 byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(wire, JsonRpcWireContext.Default.JsonRpcRequestWire);
                 await _handler.WriteMessageAsync(bytes, cancellationToken).ConfigureAwait(false);
             }
@@ -113,11 +116,62 @@ public sealed partial class JsonRpc
         }
     }
 
-    private ValueTask SendNotificationAsync(string method, JsonElement? @params)
+    private ValueTask SendNotificationAsync(string method, JsonElement? @params, bool propagateTraceContext = false)
     {
         var wire = new JsonRpcNotificationWire { Method = method, Params = @params };
+        if (propagateTraceContext)
+        {
+            CaptureOutboundTraceContext(out string? traceParent, out string? traceState);
+            wire.TraceParent = traceParent;
+            wire.TraceState = traceState;
+        }
+
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(wire, JsonRpcWireContext.Default.JsonRpcNotificationWire);
         return _handler.WriteMessageAsync(bytes, CancellationToken.None);
+    }
+
+    // Captures the ambient Activity's W3C trace context for injection into an outbound envelope. Self-guards
+    // on the PropagateTraceContext option and on the W3C id format (the legacy hierarchical format has no
+    // traceparent representation), so the caller can invoke it unconditionally.
+    private void CaptureOutboundTraceContext(out string? traceParent, out string? traceState)
+    {
+        traceParent = null;
+        traceState = null;
+        if (!_propagateTraceContext)
+        {
+            return;
+        }
+
+        if (System.Diagnostics.Activity.Current is { IdFormat: System.Diagnostics.ActivityIdFormat.W3C, Id: { } id })
+        {
+            traceParent = id;
+            string? state = System.Diagnostics.Activity.Current.TraceStateString;
+            traceState = string.IsNullOrEmpty(state) ? null : state;
+        }
+    }
+
+    // Extracts the W3C trace context an upstream peer placed on an inbound envelope. Self-guards on the
+    // PropagateTraceContext option so a connection that did not opt in ignores the members entirely.
+    private void ReadInboundTraceContext(JsonElement message, out string? traceParent, out string? traceState)
+    {
+        traceParent = null;
+        traceState = null;
+        if (!_propagateTraceContext)
+        {
+            return;
+        }
+
+        if (message.TryGetProperty("traceparent", out JsonElement traceParentElement)
+            && traceParentElement.ValueKind == JsonValueKind.String)
+        {
+            traceParent = traceParentElement.GetString();
+        }
+
+        if (message.TryGetProperty("tracestate", out JsonElement traceStateElement)
+            && traceStateElement.ValueKind == JsonValueKind.String)
+        {
+            traceState = traceStateElement.GetString();
+        }
     }
 
     // ---- Keep-alive ---------------------------------------------------------
@@ -309,10 +363,12 @@ public sealed partial class JsonRpc
                     return Task.CompletedTask;
                 }
 
-                return DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true, responses);
+                ReadInboundTraceContext(message, out string? ntp, out string? nts);
+                return DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true, responses, ntp, nts);
             }
 
-            return DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false, responses);
+            ReadInboundTraceContext(message, out string? tp, out string? ts);
+            return DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false, responses, tp, ts);
         }
 
         if (hasId)
@@ -374,13 +430,15 @@ public sealed partial class JsonRpc
                     return;
                 }
 
-                _ = DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true);
+                ReadInboundTraceContext(message, out string? ntp, out string? nts);
+                _ = DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true, traceParent: ntp, traceState: nts);
             }
             else
             {
                 // A request with an explicit "id": null is still a request and must receive a
                 // response with "id": null; only the absence of the id member denotes a notification.
-                _ = DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false);
+                ReadInboundTraceContext(message, out string? tp, out string? ts);
+                _ = DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false, traceParent: tp, traceState: ts);
             }
 
             return;
@@ -416,7 +474,7 @@ public sealed partial class JsonRpc
         }
     }
 
-    private async Task DispatchRequestAsync(RequestId id, string method, JsonElement? @params, bool isNotification, List<byte[]>? batch = null)
+    private async Task DispatchRequestAsync(RequestId id, string method, JsonElement? @params, bool isNotification, List<byte[]>? batch = null, string? traceParent = null, string? traceState = null)
     {
         // Built-in liveness probe: answer immediately and cheaply, ahead of middleware and throttling,
         // so keep-alive works regardless of authentication state or concurrency pressure.
@@ -503,7 +561,7 @@ public sealed partial class JsonRpc
             }
 
             instrumented = true;
-            activity = JsonRpcDiagnostics.StartServerActivity(method, id);
+            activity = JsonRpcDiagnostics.StartServerActivity(method, id, traceParent, traceState);
             startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
             metricTags = new System.Diagnostics.TagList
             {

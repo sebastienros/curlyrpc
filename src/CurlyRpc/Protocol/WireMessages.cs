@@ -30,6 +30,18 @@ internal sealed class JsonRpcRequestWire
     [JsonPropertyName("params")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonElement? Params { get; set; }
+
+    // W3C Trace Context propagation (opt-in via JsonRpcOptions.PropagateTraceContext). These carry the
+    // caller's distributed-trace context so the remote server span can parent to the client span. Written
+    // only when set; omitted otherwise, so peers that don't understand them are unaffected.
+    // https://www.w3.org/TR/trace-context/
+    [JsonPropertyName("traceparent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TraceParent { get; set; }
+
+    [JsonPropertyName("tracestate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TraceState { get; set; }
 }
 
 /// <summary>
@@ -47,6 +59,16 @@ internal sealed class JsonRpcNotificationWire
     [JsonPropertyName("params")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public JsonElement? Params { get; set; }
+
+    // W3C Trace Context propagation (opt-in via JsonRpcOptions.PropagateTraceContext). See
+    // JsonRpcRequestWire for details. https://www.w3.org/TR/trace-context/
+    [JsonPropertyName("traceparent")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TraceParent { get; set; }
+
+    [JsonPropertyName("tracestate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TraceState { get; set; }
 }
 
 /// <summary>

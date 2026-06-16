@@ -524,6 +524,24 @@ using CurlyRpc.Extensions.Logging;
 using var bridge = JsonRpcLoggingBridge.Create(loggerFactory);
 ```
 
+### Cross-process trace correlation
+
+By default each peer's spans live in their own trace: the client `rpc.client` span and the server
+`rpc.server` span are not linked across the connection. Set `PropagateTraceContext = true` on **both**
+peers to carry the active [W3C trace context](https://www.w3.org/TR/trace-context/) (`traceparent`
+and `tracestate`) on every outbound request and notification, so the server span parents to the
+caller's span and the whole call shows up as a single distributed trace:
+
+```csharp
+var options = new JsonRpcOptions { PropagateTraceContext = true };
+```
+
+The fields are written as optional `traceparent`/`tracestate` members on the JSON-RPC envelope and are
+omitted when there is no active W3C-format `Activity`, so the wire stays backward/forward compatible —
+peers that don't understand them (including a peer that leaves the option off) simply ignore the extra
+members. Internal control messages (`$/cancelRequest`, `$/ping`, streaming `$/enumerator/*`) never
+carry trace context.
+
 ## Options reference
 
 `JsonRpcOptions` controls a connection:
@@ -534,6 +552,7 @@ using var bridge = JsonRpcLoggingBridge.Create(loggerFactory);
 | `CancellationMethodName` | `$/cancelRequest` | Method used to signal cancellation to the peer. |
 | `DisposeHandlerOnDispose` | `true` | Whether disposing the connection disposes the message handler (transport). |
 | `InboundMiddleware` | `null` | Hook invoked for every inbound request/notification (auth, rate limiting, …). |
+| `PropagateTraceContext` | `false` | When `true`, injects/honors W3C `traceparent`/`tracestate` on requests and notifications so server spans link to the caller's trace. Enable on both peers. |
 | `MaximumInboundMessageSize` | `0` (unlimited) | Maximum size in bytes of an inbound frame; larger frames fault the connection with `JsonRpcMessageTooLargeException`. |
 | `MaximumConcurrentRequests` | `0` (unlimited) | Maximum number of inbound handlers dispatched concurrently; excess requests queue. |
 | `ExposeExceptionDetails` | `true` | When `false`, unhandled handler exceptions return a generic message instead of `Exception.Message`. |

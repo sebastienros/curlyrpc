@@ -61,14 +61,19 @@ public static class JsonRpcDiagnostics
         return activity;
     }
 
-    internal static Activity? StartServerActivity(string method, RequestId requestId)
+    internal static Activity? StartServerActivity(string method, RequestId requestId, string? traceParent = null, string? traceState = null)
     {
         if (!ActivitySource.HasListeners())
         {
             return null;
         }
 
-        Activity? activity = ActivitySource.StartActivity(method, ActivityKind.Server);
+        // When the peer propagated W3C trace context (opt-in), parent the server span to the remote client
+        // span so both ends form a single distributed trace. isRemote: true marks the parent as off-process.
+        Activity? activity = traceParent is not null
+            && ActivityContext.TryParse(traceParent, traceState, isRemote: true, out ActivityContext parentContext)
+                ? ActivitySource.StartActivity(method, ActivityKind.Server, parentContext)
+                : ActivitySource.StartActivity(method, ActivityKind.Server);
         if (activity is { IsAllDataRequested: true })
         {
             activity.SetTag("rpc.system", RpcSystem);
