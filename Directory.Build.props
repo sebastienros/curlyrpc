@@ -25,6 +25,11 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
+  <!-- Source Link (GitHub) for all projects -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
+  </ItemGroup>
+
   <!-- Quality defaults -->
   <PropertyGroup>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
