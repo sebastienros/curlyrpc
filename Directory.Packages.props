@@ -9,12 +9,10 @@
     The core CurlyRpc library has a single runtime dependency:
     Microsoft.Extensions.Logging.Abstractions (AOT- and trim-safe). All other versions
     below are tooling-only: the bundled source generator, plus the test, sample, and
-    benchmark projects.
+    benchmark projects. The logging bridge is pinned per target framework so each build
+    aligns with its platform band (8.0.x on net8.0, 10.0.x on net10.0).
   -->
   <ItemGroup>
-    <!-- Core runtime dependency: ILogger bridge -->
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
-
     <!-- Source generator (bundled into the CurlyRpc package as an analyzer) -->
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
 
@@ -25,6 +23,15 @@
     <PackageVersion Include="MSTest.TestAdapter" Version="4.2.3" />
     <PackageVersion Include="MSTest.TestFramework" Version="4.2.3" />
     <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.8.0" />
+  </ItemGroup>
+
+  <!-- Core runtime dependency: ILogger bridge, pinned per target framework. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
   </ItemGroup>
 
 </Project>

@@ -20,7 +20,7 @@ public sealed partial class JsonRpc
 
     // ---- Outbound -----------------------------------------------------------
 
-    private async Task<JsonElement> InvokeCoreAsync(string method, JsonElement? @params, CancellationToken cancellationToken)
+    private async Task<JsonElement> InvokeCoreAsync(string method, RawJsonValue? @params, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -105,7 +105,7 @@ public sealed partial class JsonRpc
     {
         try
         {
-            JsonElement idParams = BuildIdParameters(id);
+            RawJsonValue idParams = BuildIdParameters(id);
             var wire = new JsonRpcNotificationWire { Method = _cancellationMethodName, Params = idParams };
             byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(wire, JsonRpcWireContext.Default.JsonRpcNotificationWire);
             await _handler.WriteMessageAsync(bytes, CancellationToken.None).ConfigureAwait(false);
@@ -116,7 +116,7 @@ public sealed partial class JsonRpc
         }
     }
 
-    private ValueTask SendNotificationAsync(string method, JsonElement? @params, bool propagateTraceContext = false)
+    private ValueTask SendNotificationAsync(string method, RawJsonValue? @params, bool propagateTraceContext = false)
     {
         var wire = new JsonRpcNotificationWire { Method = method, Params = @params };
         if (propagateTraceContext)
@@ -701,7 +701,7 @@ public sealed partial class JsonRpc
         {
             Code = code,
             Message = message,
-            Data = data is null ? null : SerializeToElement(data),
+            Data = data is null ? null : SerializeToRaw(data),
         };
 
         var wire = new JsonRpcErrorWire { Id = id, Error = detail };
@@ -745,7 +745,7 @@ public sealed partial class JsonRpc
 
     // ---- Serialization helpers ---------------------------------------------
 
-    private JsonElement? SerializePositionalParameters(object?[]? arguments)
+    private RawJsonValue? SerializePositionalParameters(object?[]? arguments)
     {
         if (arguments is null || arguments.Length == 0)
         {
@@ -771,16 +771,16 @@ public sealed partial class JsonRpc
             writer.WriteEndArray();
         }
 
-        return ParseElement(buffer.WrittenSpan);
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 
-    private JsonElement? SerializeParameterObject(object? argument)
-        => argument is null ? null : SerializeToElement(argument);
+    private RawJsonValue? SerializeParameterObject(object? argument)
+        => argument is null ? null : SerializeToRaw(argument);
 
-    private JsonElement? SerializeResult(object? result)
-        => result is null ? null : SerializeToElement(result);
+    private RawJsonValue? SerializeResult(object? result)
+        => result is null ? null : SerializeToRaw(result);
 
-    private JsonElement SerializeToElement(object value)
+    private RawJsonValue SerializeToRaw(object value)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -788,7 +788,7 @@ public sealed partial class JsonRpc
             JsonSerializer.Serialize(writer, value, _serializerOptions.GetTypeInfo(value.GetType()));
         }
 
-        return ParseElement(buffer.WrittenSpan);
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 
     private TResult? DeserializeResult<TResult>(JsonElement result)
@@ -801,7 +801,7 @@ public sealed partial class JsonRpc
         return (TResult?)result.Deserialize(_serializerOptions.GetTypeInfo(typeof(TResult)));
     }
 
-    private static JsonElement BuildIdParameters(long id)
+    private static RawJsonValue BuildIdParameters(long id)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -811,14 +811,7 @@ public sealed partial class JsonRpc
             writer.WriteEndObject();
         }
 
-        return ParseElement(buffer.WrittenSpan);
-    }
-
-    private static JsonElement ParseElement(ReadOnlySpan<byte> utf8)
-    {
-        var reader = new Utf8JsonReader(utf8);
-        using JsonDocument document = JsonDocument.ParseValue(ref reader);
-        return document.RootElement.Clone();
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 
     private static RequestId ReadRequestId(JsonElement idElement)

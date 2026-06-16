@@ -39,7 +39,7 @@ public sealed partial class JsonRpc
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
 
-        JsonElement? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(arguments);
         JsonElement start = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
 
         long? token = start.TryGetProperty("token", out JsonElement tokenElement)
@@ -113,7 +113,7 @@ public sealed partial class JsonRpc
             throw;
         }
 
-        JsonElement result = BuildEnumerableEnvelope(finished ? null : token, values, finished);
+        RawJsonValue result = BuildEnumerableEnvelope(finished ? null : token, values, finished);
 
         if (finished)
         {
@@ -170,7 +170,7 @@ public sealed partial class JsonRpc
             await completed.DisposeAsync().ConfigureAwait(false);
         }
 
-        JsonElement result = BuildEnumerableEnvelope(null, values, finished);
+        RawJsonValue result = BuildEnumerableEnvelope(null, values, finished);
         await SendResultElementAsync(id, result).ConfigureAwait(false);
     }
 
@@ -182,7 +182,7 @@ public sealed partial class JsonRpc
         }
     }
 
-    private Task SendResultElementAsync(RequestId id, JsonElement result)
+    private Task SendResultElementAsync(RequestId id, RawJsonValue result)
     {
         var wire = new JsonRpcResultWire { Id = id, Result = result };
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(wire, JsonRpcWireContext.Default.JsonRpcResultWire);
@@ -245,7 +245,7 @@ public sealed partial class JsonRpc
         return null;
     }
 
-    private static JsonElement BuildEnumerableEnvelope(long? token, List<JsonElement> values, bool finished)
+    private static RawJsonValue BuildEnumerableEnvelope(long? token, List<JsonElement> values, bool finished)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -268,10 +268,10 @@ public sealed partial class JsonRpc
             writer.WriteEndObject();
         }
 
-        return ParseElement(buffer.WrittenSpan);
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 
-    private static JsonElement BuildTokenParameters(long token)
+    private static RawJsonValue BuildTokenParameters(long token)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -281,6 +281,6 @@ public sealed partial class JsonRpc
             writer.WriteEndObject();
         }
 
-        return ParseElement(buffer.WrittenSpan);
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 }

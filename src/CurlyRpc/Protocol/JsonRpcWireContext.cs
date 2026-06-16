@@ -16,6 +16,7 @@ namespace CurlyRpc;
 [JsonSerializable(typeof(JsonRpcResultWire))]
 [JsonSerializable(typeof(JsonRpcErrorWire))]
 [JsonSerializable(typeof(JsonRpcErrorDetail))]
+[JsonSerializable(typeof(RawJsonValue))]
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class JsonRpcWireContext : JsonSerializerContext
 {

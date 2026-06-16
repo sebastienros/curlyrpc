@@ -13,8 +13,9 @@ internal static class JsonRpcConstants
 
 /// <summary>
 /// Wire representation of an outbound JSON-RPC request (a call that expects a response).
-/// The dynamic <c>params</c> payload is pre-serialized into a <see cref="JsonElement"/> using
-/// the caller-supplied <see cref="JsonSerializerOptions"/> so this envelope stays AOT-safe.
+/// The dynamic <c>params</c> payload is pre-serialized into a <see cref="RawJsonValue"/> using
+/// the caller-supplied <see cref="JsonSerializerOptions"/> so this envelope stays AOT-safe and is
+/// written straight through without re-tokenizing.
 /// </summary>
 internal sealed class JsonRpcRequestWire
 {
@@ -29,7 +30,7 @@ internal sealed class JsonRpcRequestWire
 
     [JsonPropertyName("params")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? Params { get; set; }
+    public RawJsonValue? Params { get; set; }
 
     // W3C Trace Context propagation (opt-in via JsonRpcOptions.PropagateTraceContext). These carry the
     // caller's distributed-trace context so the remote server span can parent to the client span. Written
@@ -58,7 +59,7 @@ internal sealed class JsonRpcNotificationWire
 
     [JsonPropertyName("params")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? Params { get; set; }
+    public RawJsonValue? Params { get; set; }
 
     // W3C Trace Context propagation (opt-in via JsonRpcOptions.PropagateTraceContext). See
     // JsonRpcRequestWire for details. https://www.w3.org/TR/trace-context/
@@ -84,7 +85,7 @@ internal sealed class JsonRpcResultWire
     public RequestId Id { get; set; }
 
     [JsonPropertyName("result")]
-    public JsonElement? Result { get; set; }
+    public RawJsonValue? Result { get; set; }
 }
 
 /// <summary>
@@ -115,5 +116,5 @@ internal sealed class JsonRpcErrorDetail
 
     [JsonPropertyName("data")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public JsonElement? Data { get; set; }
+    public RawJsonValue? Data { get; set; }
 }

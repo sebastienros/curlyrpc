@@ -234,7 +234,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public async Task<TResult?> InvokeAsync<TResult>(string method, object?[]? arguments, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        JsonElement? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(arguments);
         JsonElement result = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
         return DeserializeResult<TResult>(result);
     }
@@ -254,7 +254,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public async Task<TResult?> InvokeWithParameterObjectAsync<TResult>(string method, object? argument = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        JsonElement? @params = SerializeParameterObject(argument);
+        RawJsonValue? @params = SerializeParameterObject(argument);
         JsonElement result = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
         return DeserializeResult<TResult>(result);
     }
@@ -273,7 +273,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public async Task InvokeAsync(string method, object?[]? arguments, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        JsonElement? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(arguments);
         await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
     }
 
@@ -283,7 +283,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public Task NotifyAsync(string method, params object?[]? arguments)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        JsonElement? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(arguments);
         return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 
@@ -293,7 +293,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public Task NotifyWithParameterObjectAsync(string method, object? argument = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        JsonElement? @params = SerializeParameterObject(argument);
+        RawJsonValue? @params = SerializeParameterObject(argument);
         return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Text;
+using System.Text;
 
 namespace CurlyRpc;
 
@@ -150,7 +151,7 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         }
 
         ReadOnlySpan<byte> name = line[..colon].Trim((byte)' ');
-        if (!AsciiEqualsIgnoreCase(name, ContentLengthName))
+        if (!Ascii.EqualsIgnoreCase(name, ContentLengthName))
         {
             return false;
         }
@@ -160,29 +161,5 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
             && bytesConsumed == value.Length
             && parsed >= 0
             && (contentLength = parsed) >= 0;
-    }
-
-    private static bool AsciiEqualsIgnoreCase(ReadOnlySpan<byte> value, ReadOnlySpan<byte> lowerExpected)
-    {
-        if (value.Length != lowerExpected.Length)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < value.Length; i++)
-        {
-            byte c = value[i];
-            if (c is >= (byte)'A' and <= (byte)'Z')
-            {
-                c += 32; // to lower-case ASCII
-            }
-
-            if (c != lowerExpected[i])
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 }
