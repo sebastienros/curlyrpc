@@ -82,13 +82,19 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// </summary>
     /// <param name="stream">A readable and writable duplex stream.</param>
     /// <param name="options">Connection options, or <see langword="null"/> for defaults.</param>
+    /// <remarks>
+    /// The connection takes ownership of <paramref name="stream"/> by default and disposes it when the
+    /// connection is disposed, closing the transport so the peer observes end-of-stream. Set
+    /// <see cref="JsonRpcOptions.OwnsStream"/> to <see langword="false"/> to retain ownership. This matches
+    /// StreamJsonRpc's <c>JsonRpc(Stream)</c> behavior.
+    /// </remarks>
     public JsonRpc(Stream stream, JsonRpcOptions? options = null)
         : this(CreateDefaultHandler(stream, options), options)
     {
     }
 
     private static HeaderDelimitedMessageHandler CreateDefaultHandler(Stream stream, JsonRpcOptions? options)
-        => new(stream, ownsStream: false, maximumMessageSize: options?.MaximumInboundMessageSize ?? 0);
+        => new(stream, ownsStream: options?.OwnsStream ?? true, maximumMessageSize: options?.MaximumInboundMessageSize ?? 0);
 
     /// <summary>
     /// A task that completes when the connection stops listening: successfully on end-of-stream or
@@ -102,6 +108,11 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// <summary>
     /// Creates a connection over a duplex stream and immediately starts listening.
     /// </summary>
+    /// <remarks>
+    /// The connection takes ownership of <paramref name="stream"/> by default and disposes it when the
+    /// connection is disposed; set <see cref="JsonRpcOptions.OwnsStream"/> to <see langword="false"/> to
+    /// retain ownership. See <see cref="JsonRpc(Stream, JsonRpcOptions?)"/>.
+    /// </remarks>
     public static JsonRpc Attach(Stream stream, JsonRpcOptions? options = null)
     {
         var rpc = new JsonRpc(stream, options);

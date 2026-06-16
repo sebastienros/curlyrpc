@@ -32,6 +32,22 @@ public sealed class JsonRpcOptions
     public bool DisposeHandlerOnDispose { get; set; } = true;
 
     /// <summary>
+    /// When <see langword="true"/> (the default), a connection that creates its own message handler from
+    /// a stream — the <see cref="JsonRpc(Stream, JsonRpcOptions?)"/> constructor and
+    /// <see cref="JsonRpc.Attach(Stream, JsonRpcOptions?)"/> — disposes that stream when the connection is
+    /// disposed, closing the transport so the remote peer observes end-of-stream. Set to
+    /// <see langword="false"/> when the caller retains ownership of the stream and will dispose it itself.
+    /// </summary>
+    /// <remarks>
+    /// This only applies when <see cref="JsonRpc"/> constructs the handler. When you pass your own
+    /// <see cref="IJsonRpcMessageHandler"/>, the handler's own <c>ownsStream(s)</c> constructor argument
+    /// governs stream disposal and this option is ignored. The default of <see langword="true"/> matches
+    /// StreamJsonRpc's <c>JsonRpc(Stream)</c> / <c>JsonRpc.Attach(Stream)</c> behavior: handing a raw
+    /// stream to the connection transfers ownership, so disposing the connection closes the connection.
+    /// </remarks>
+    public bool OwnsStream { get; set; } = true;
+
+    /// <summary>
     /// An optional hook invoked for every inbound request and notification before dispatch. Use it to
     /// implement authentication (see <see cref="HandshakeAuthenticationMiddleware"/>) or other
     /// cross-cutting policies.

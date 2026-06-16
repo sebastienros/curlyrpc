@@ -38,6 +38,7 @@ CurlyRpc gives each side of a connection a full-duplex JSON-RPC 2.0 peer with a 
 - [Security and hardening](#security-and-hardening)
 - [Observability](#observability)
 - [Options reference](#options-reference)
+- [Migrating from StreamJsonRpc](#migrating-from-streamjsonrpc)
 - [Sample](#sample)
 
 ## Package
@@ -91,6 +92,23 @@ await rpc.Completion; // observe disconnection / surface transport errors
 Disposing the connection (`DisposeAsync`) stops listening, fails any in-flight calls with
 `ConnectionLostException`, and — unless you opt out via `JsonRpcOptions.DisposeHandlerOnDispose` —
 disposes the underlying message handler so the transport is torn down.
+
+### Stream ownership
+
+When you hand a raw stream to `new JsonRpc(stream)` or `JsonRpc.Attach(stream)`, the connection
+**takes ownership of that stream by default** and disposes it when the connection is disposed —
+closing the transport so the remote peer observes end-of-stream. This matches StreamJsonRpc and the
+BCL stream wrappers (`StreamReader`, `GZipStream`, `SslStream`, …). Set `JsonRpcOptions.OwnsStream =
+false` to retain ownership and dispose the stream yourself:
+
+```csharp
+await using var rpc = new JsonRpc(stream, new JsonRpcOptions { OwnsStream = false });
+// 'stream' is still open here; you dispose it when you're done.
+```
+
+Stream ownership only applies when the connection creates its own handler. When you build a handler
+explicitly (`new HeaderDelimitedMessageHandler(stream)`), the **handler's** `ownsStream(s)` constructor
+argument governs disposal (default `false`, i.e. caller-owns) and `OwnsStream` is ignored.
 
 ## Registering local handlers
 
@@ -551,6 +569,7 @@ carry trace context.
 | `SerializerOptions` | reflection-based `Web` defaults | `JsonSerializerOptions` for params/results. Back with a `JsonSerializerContext` for AOT. |
 | `CancellationMethodName` | `$/cancelRequest` | Method used to signal cancellation to the peer. |
 | `DisposeHandlerOnDispose` | `true` | Whether disposing the connection disposes the message handler (transport). |
+| `OwnsStream` | `true` | For the `JsonRpc(Stream)` / `Attach(Stream)` entry points: whether disposing the connection disposes the stream it was given (closing the transport). Ignored when you supply your own handler. |
 | `InboundMiddleware` | `null` | Hook invoked for every inbound request/notification (auth, rate limiting, …). |
 | `PropagateTraceContext` | `false` | When `true`, injects/honors W3C `traceparent`/`tracestate` on requests and notifications so server spans link to the caller's trace. Enable on both peers. |
 | `MaximumInboundMessageSize` | `0` (unlimited) | Maximum size in bytes of an inbound frame; larger frames fault the connection with `JsonRpcMessageTooLargeException`. |
@@ -558,6 +577,19 @@ carry trace context.
 | `ExposeExceptionDetails` | `true` | When `false`, unhandled handler exceptions return a generic message instead of `Exception.Message`. |
 | `KeepAliveInterval` | `TimeSpan.Zero` (disabled) | Interval between automatic `$/ping` liveness probes. |
 | `KeepAliveTimeout` | `KeepAliveInterval` | How long to wait for a ping response before faulting with `ConnectionLostException`. |
+
+## Migrating from StreamJsonRpc
+
+CurlyRpc mirrors StreamJsonRpc's stream-ownership contract: `new JsonRpc(stream)` and
+`JsonRpc.Attach(stream)` **take ownership of the stream** and dispose it when the connection is
+disposed, so disposing the connection closes the transport and the peer observes end-of-stream. If
+your code relies on `using var rpc = …` to tear the connection down (for example a server that frees a
+slot only when the peer disconnects), this works unchanged.
+
+If you instead want to keep the stream open after the connection is disposed, set
+`JsonRpcOptions.OwnsStream = false` (StreamJsonRpc requires dropping to a manually-constructed
+handler for the same effect). When you build the message handler yourself, ownership is governed by
+the handler's `ownsStream(s)` argument and defaults to caller-owns either way.
 
 ## Sample
 
