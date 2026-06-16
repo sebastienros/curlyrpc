@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Buffers.Text;
 using System.Text;
 
@@ -84,18 +83,19 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
     /// <inheritdoc />
     protected override async ValueTask WriteFrameAsync(ReadOnlyMemory<byte> body)
     {
+        // The header is tiny and bounded, so format it on the stack and write it synchronously
+        // (no await holds the stack buffer). Writes are serialized under the base class write lock,
+        // so the synchronous header and the async body stay ordered, and the base class flushes after.
+        WriteHeaderToStream(body.Length);
+        await SendStream.WriteAsync(body, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    private void WriteHeaderToStream(int contentLength)
+    {
         // "Content-Length: " (16) + up to 10 digits + "\r\n\r\n" (4) = 30 bytes max.
-        byte[] header = ArrayPool<byte>.Shared.Rent(32);
-        try
-        {
-            int headerLength = WriteHeader(header, body.Length);
-            await SendStream.WriteAsync(header.AsMemory(0, headerLength), CancellationToken.None).ConfigureAwait(false);
-            await SendStream.WriteAsync(body, CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(header);
-        }
+        Span<byte> header = stackalloc byte[32];
+        int headerLength = WriteHeader(header, contentLength);
+        SendStream.Write(header[..headerLength]);
     }
 
     private static int WriteHeader(Span<byte> destination, int contentLength)
