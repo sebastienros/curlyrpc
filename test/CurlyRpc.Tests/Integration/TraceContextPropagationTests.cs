@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using CurlyRpc.Tests.Harness;
@@ -24,7 +25,7 @@ public sealed class TraceContextPropagationTests
         return (new JsonRpc(h1, Options(propagate)), new JsonRpc(h2, Options(propagate)));
     }
 
-    private static ActivityListener ListenAll(List<Activity> sink)
+    private static ActivityListener ListenAll(ConcurrentQueue<Activity> sink)
     {
         // Force W3C ids so traceparent has a valid representation regardless of ambient host configuration.
         Activity.DefaultIdFormat = ActivityIdFormat.W3C;
@@ -35,16 +36,42 @@ public sealed class TraceContextPropagationTests
             ShouldListenTo = source =>
                 source.Name == JsonRpcDiagnostics.SourceName || source.Name == TestSourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStopped = sink.Add,
+            ActivityStopped = sink.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
         return listener;
     }
 
+    // The server span is stopped (and therefore recorded) in a finally block that runs *after* the
+    // response is written to the wire, so it can race the client's InvokeAsync completion. Poll until
+    // it appears instead of assuming it is present the instant the client call returns.
+    private static async Task<Activity> WaitForActivityAsync(
+        ConcurrentQueue<Activity> sink, ActivityKind kind, string displayName, double timeoutSeconds = 5)
+    {
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            Activity? match = sink.FirstOrDefault(a => a.Kind == kind && a.DisplayName == displayName);
+            if (match is not null)
+            {
+                return match;
+            }
+
+            if (sw.Elapsed > TimeSpan.FromSeconds(timeoutSeconds))
+            {
+                Assert.Fail(
+                    $"{kind} activity '{displayName}' was not recorded within {timeoutSeconds}s. " +
+                    $"Recorded: [{string.Join(", ", sink.Select(a => $"{a.Kind}:{a.DisplayName}"))}]");
+            }
+
+            await Task.Delay(15);
+        }
+    }
+
     [TestMethod]
     public async Task Invoke_WithPropagationEnabled_LinksServerSpanToClientTrace()
     {
-        var activities = new List<Activity>();
+        var activities = new ConcurrentQueue<Activity>();
         using var listener = ListenAll(activities);
 
         var (client, server) = CreatePair(propagate: true);
@@ -58,8 +85,8 @@ public sealed class TraceContextPropagationTests
         int result = await client.InvokeAsync<int>("square", 6);
         Assert.AreEqual(36, result);
 
-        Activity clientActivity = activities.Single(a => a.Kind == ActivityKind.Client && a.DisplayName == "square");
-        Activity serverActivity = activities.Single(a => a.Kind == ActivityKind.Server && a.DisplayName == "square");
+        Activity serverActivity = await WaitForActivityAsync(activities, ActivityKind.Server, "square");
+        Activity clientActivity = await WaitForActivityAsync(activities, ActivityKind.Client, "square");
 
         Assert.AreEqual(clientActivity.TraceId, serverActivity.TraceId);
         Assert.AreEqual(clientActivity.SpanId, serverActivity.ParentSpanId);
@@ -69,7 +96,7 @@ public sealed class TraceContextPropagationTests
     [TestMethod]
     public async Task Invoke_WithPropagationDisabled_ServerSpanHasNoRemoteParent()
     {
-        var activities = new List<Activity>();
+        var activities = new ConcurrentQueue<Activity>();
         using var listener = ListenAll(activities);
 
         var (client, server) = CreatePair(propagate: false);
@@ -82,7 +109,7 @@ public sealed class TraceContextPropagationTests
 
         _ = await client.InvokeAsync<int>("square", 6);
 
-        Activity serverActivity = activities.Single(a => a.Kind == ActivityKind.Server && a.DisplayName == "square");
+        Activity serverActivity = await WaitForActivityAsync(activities, ActivityKind.Server, "square");
         Assert.IsFalse(serverActivity.HasRemoteParent);
         Assert.AreEqual(default, serverActivity.ParentSpanId);
     }
@@ -90,7 +117,7 @@ public sealed class TraceContextPropagationTests
     [TestMethod]
     public async Task Invoke_WithPropagationEnabled_PropagatesTraceState()
     {
-        var activities = new List<Activity>();
+        var activities = new ConcurrentQueue<Activity>();
         using var listener = ListenAll(activities);
 
         var (client, server) = CreatePair(propagate: true);
@@ -109,14 +136,14 @@ public sealed class TraceContextPropagationTests
             _ = await client.InvokeAsync<int>("square", 6);
         }
 
-        Activity serverActivity = activities.Single(a => a.Kind == ActivityKind.Server && a.DisplayName == "square");
+        Activity serverActivity = await WaitForActivityAsync(activities, ActivityKind.Server, "square");
         Assert.AreEqual("vendor=abc123", serverActivity.TraceStateString);
     }
 
     [TestMethod]
     public async Task Notify_WithPropagationEnabled_LinksServerSpanToCallerTrace()
     {
-        var activities = new List<Activity>();
+        var activities = new ConcurrentQueue<Activity>();
         using var listener = ListenAll(activities);
 
         var (client, server) = CreatePair(propagate: true);
@@ -138,7 +165,7 @@ public sealed class TraceContextPropagationTests
             await handled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         }
 
-        Activity serverActivity = activities.Single(a => a.Kind == ActivityKind.Server && a.DisplayName == "notice");
+        Activity serverActivity = await WaitForActivityAsync(activities, ActivityKind.Server, "notice");
         Assert.AreEqual(callerTraceId, serverActivity.TraceId);
         Assert.AreEqual(callerSpanId, serverActivity.ParentSpanId);
         Assert.IsTrue(serverActivity.HasRemoteParent);
