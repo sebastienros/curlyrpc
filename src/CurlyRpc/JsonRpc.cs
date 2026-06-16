@@ -36,7 +36,11 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     private readonly ConcurrentDictionary<long, RpcEnumerableResult> _enumerators = new();
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CancellationTokenSource _disposeCts = new();
+#if NET9_0_OR_GREATER
+    private readonly Lock _gate = new();
+#else
     private readonly object _gate = new();
+#endif
 
     private long _nextId;
     private long _nextEnumeratorToken;
