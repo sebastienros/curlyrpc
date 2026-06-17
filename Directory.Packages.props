@@ -13,8 +13,12 @@
     aligns with its platform band (8.0.x on net8.0, 10.0.x on net10.0).
   -->
   <ItemGroup>
-    <!-- Source generator (bundled into the CurlyRpc package as an analyzer) -->
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+    <!-- Source generator (bundled into the CurlyRpc package as an analyzer).
+         Pinned to a LOW Roslyn baseline (4.11.0) on purpose: an analyzer cannot reference a
+         compiler newer than the SDK building the consumer (Roslyn enforces CS9057). 4.11 loads
+         across the .NET 9 and .NET 10 SDKs; bumping to 5.0 broke every consumer on an older SDK.
+         Do not raise this without multi-targeting the analyzer (roslyn4.x + roslyn5.0 folders). -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
 
     <!-- Source Link: embed repository/commit info so consumers can step into sources -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.300" />
