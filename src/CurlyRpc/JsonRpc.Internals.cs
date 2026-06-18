@@ -745,7 +745,18 @@ public sealed partial class JsonRpc
 
     // ---- Serialization helpers ---------------------------------------------
 
-    private RawJsonValue? SerializePositionalParameters(object?[]? arguments)
+    // Positional and by-name arguments are serialized by their *runtime* type (the untyped invoke API
+    // has no declared parameter type to use), so under a source-generated JsonSerializerContext every
+    // concrete runtime type must be registered. Lazy LINQ projections, iterator results, and anonymous
+    // types compile to generated types that cannot be registered; this hint points the caller at the fix.
+    private const string RuntimeTypeRegistrationHint =
+        "Arguments are serialized by their runtime type, so under a source-generated JsonSerializerContext " +
+        "(required for Native AOT) that concrete type must be registered with [JsonSerializable]. Lazy LINQ " +
+        "projections (for example '.Select(...)'), iterator ('yield') results, and anonymous types compile to " +
+        "generated types that cannot be registered; materialize them to a registered type first (for example " +
+        "by calling '.ToArray()').";
+
+    private RawJsonValue? SerializePositionalParameters(string method, object?[]? arguments)
     {
         if (arguments is null || arguments.Length == 0)
         {
@@ -756,15 +767,25 @@ public sealed partial class JsonRpc
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartArray();
-            foreach (object? argument in arguments)
+            for (int i = 0; i < arguments.Length; i++)
             {
+                object? argument = arguments[i];
                 if (argument is null)
                 {
                     writer.WriteNullValue();
+                    continue;
                 }
-                else
+
+                try
                 {
                     JsonSerializer.Serialize(writer, argument, _serializerOptions.GetTypeInfo(argument.GetType()));
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+                {
+                    throw new NotSupportedException(
+                        $"Could not serialize argument at index {i} of JSON-RPC method '{method}': its runtime type " +
+                        $"'{argument.GetType()}' has no JSON metadata. {RuntimeTypeRegistrationHint}",
+                        ex);
                 }
             }
 
@@ -774,8 +795,31 @@ public sealed partial class JsonRpc
         return RawJsonValue.FromWritten(buffer.WrittenSpan);
     }
 
-    private RawJsonValue? SerializeParameterObject(object? argument)
-        => argument is null ? null : SerializeToRaw(argument);
+    private RawJsonValue? SerializeParameterObject(string method, object? argument)
+    {
+        if (argument is null)
+        {
+            return null;
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            try
+            {
+                JsonSerializer.Serialize(writer, argument, _serializerOptions.GetTypeInfo(argument.GetType()));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            {
+                throw new NotSupportedException(
+                    $"Could not serialize the parameter object of JSON-RPC method '{method}': its runtime type " +
+                    $"'{argument.GetType()}' has no JSON metadata. {RuntimeTypeRegistrationHint}",
+                    ex);
+            }
+        }
+
+        return RawJsonValue.FromWritten(buffer.WrittenSpan);
+    }
 
     private RawJsonValue? SerializeResult(object? result)
         => result is null ? null : SerializeToRaw(result);
@@ -785,7 +829,17 @@ public sealed partial class JsonRpc
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
-            JsonSerializer.Serialize(writer, value, _serializerOptions.GetTypeInfo(value.GetType()));
+            try
+            {
+                JsonSerializer.Serialize(writer, value, _serializerOptions.GetTypeInfo(value.GetType()));
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+            {
+                throw new NotSupportedException(
+                    $"Could not serialize a JSON-RPC payload of runtime type '{value.GetType()}': it has no JSON " +
+                    $"metadata. {RuntimeTypeRegistrationHint}",
+                    ex);
+            }
         }
 
         return RawJsonValue.FromWritten(buffer.WrittenSpan);

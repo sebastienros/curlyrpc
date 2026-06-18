@@ -352,6 +352,32 @@ await using var rpc = new JsonRpc(stream, new JsonRpcOptions { SerializerOptions
 If you do not supply a resolver, a reflection-based default (`JsonSerializerDefaults.Web` —
 camelCase, case-insensitive) is used. It is convenient, but not AOT-safe.
 
+### Runtime-typed arguments (untyped `InvokeAsync`)
+
+The untyped `InvokeAsync(method, object?[] args)` / `NotifyAsync` overloads have no declared parameter
+type, so each argument is serialized **by its runtime type**. Under a source-generated
+`JsonSerializerContext`, that concrete runtime type must be registered. Watch out for values whose
+runtime type differs from what you "see" at the call site:
+
+- lazy LINQ projections — `items.Select(...)` is a compiler-generated iterator, not `List<T>`/`T[]`;
+- `yield`-returned `IEnumerable<T>`;
+- anonymous types.
+
+These compile to generated types that can't be annotated with `[JsonSerializable]`, so they have no
+metadata and the call throws `NotSupportedException` (the message names the method, the argument index,
+and the runtime type). Materialize to a registered type first:
+
+```csharp
+// Throws under a source-gen context: the arg's runtime type is a Select iterator.
+await rpc.InvokeAsync("display", new object?[] { lines.Select(ToLine) });
+
+// Works: the arg's runtime type is the registered LineState[].
+await rpc.InvokeAsync("display", new object?[] { lines.Select(ToLine).ToArray() });
+```
+
+Generated `[JsonRpcProxy]` clients are not affected — they have declared parameter types and serialize
+through those.
+
 ### AOT-safe local methods
 
 `AddLocalRpcTarget(object)` and `AddLocalRpcMethod(string, Delegate)` use reflection and are annotated

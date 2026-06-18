@@ -238,14 +238,23 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// remote method returned a JSON <c>null</c> result; it never indicates a failure. Remote and transport
     /// failures are surfaced as exceptions, not as <see langword="null"/>.
     /// </returns>
+    /// <remarks>
+    /// Each positional argument is serialized by its <em>runtime</em> type (this untyped API has no declared
+    /// parameter type to use). Under a source-generated <see cref="System.Text.Json.Serialization.JsonSerializerContext"/>
+    /// — required for Native AOT — every argument's concrete runtime type must be registered. A lazy LINQ
+    /// projection (for example <c>items.Select(...)</c>), an iterator (<c>yield</c>) result, or an anonymous
+    /// type compiles to a generated type that cannot be registered; materialize it to a registered type first
+    /// (for example by calling <c>.ToArray()</c>). Otherwise the call throws <see cref="NotSupportedException"/>.
+    /// </remarks>
     /// <exception cref="RemoteInvocationException">The remote peer returned a JSON-RPC error response (carries the error <c>code</c> and optional <c>data</c>).</exception>
     /// <exception cref="RemoteMethodNotFoundException">The remote peer reported that <paramref name="method"/> does not exist (error code -32601).</exception>
     /// <exception cref="ConnectionLostException">The connection was closed before a response was received.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was signaled before the response arrived.</exception>
+    /// <exception cref="NotSupportedException">An argument's runtime type has no JSON metadata under the configured serializer (common with lazy LINQ projections or anonymous types under a source-generated context).</exception>
     public async Task<TResult?> InvokeAsync<TResult>(string method, object?[]? arguments, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        RawJsonValue? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(method, arguments);
         JsonElement result = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
         return DeserializeResult<TResult>(result);
     }
@@ -265,7 +274,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public async Task<TResult?> InvokeWithParameterObjectAsync<TResult>(string method, object? argument = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        RawJsonValue? @params = SerializeParameterObject(argument);
+        RawJsonValue? @params = SerializeParameterObject(method, argument);
         JsonElement result = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
         return DeserializeResult<TResult>(result);
     }
@@ -284,7 +293,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public async Task InvokeAsync(string method, object?[]? arguments, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        RawJsonValue? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(method, arguments);
         await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
     }
 
@@ -294,7 +303,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public Task NotifyAsync(string method, params object?[]? arguments)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        RawJsonValue? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(method, arguments);
         return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 
@@ -304,7 +313,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     public Task NotifyWithParameterObjectAsync(string method, object? argument = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
-        RawJsonValue? @params = SerializeParameterObject(argument);
+        RawJsonValue? @params = SerializeParameterObject(method, argument);
         return SendNotificationAsync(method, @params, _propagateTraceContext).AsTask();
     }
 

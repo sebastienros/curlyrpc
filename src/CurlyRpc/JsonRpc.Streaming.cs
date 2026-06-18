@@ -39,7 +39,7 @@ public sealed partial class JsonRpc
     {
         ArgumentException.ThrowIfNullOrEmpty(method);
 
-        RawJsonValue? @params = SerializePositionalParameters(arguments);
+        RawJsonValue? @params = SerializePositionalParameters(method, arguments);
         JsonElement start = await InvokeCoreAsync(method, @params, cancellationToken).ConfigureAwait(false);
 
         long? token = start.TryGetProperty("token", out JsonElement tokenElement)
