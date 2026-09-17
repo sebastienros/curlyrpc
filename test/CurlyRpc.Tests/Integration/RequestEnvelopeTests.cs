@@ -15,6 +15,8 @@ public sealed class RequestEnvelopeTests
             "null", "true", "42", "\"text\"",
             "{}", """{"jsonrpc":"2.0"}""",
             """{"method":"run"}""",
+            """{"method":"$/cancelRequest","params":{"id":1}}""",
+            """{"jsonrpc":"2.0","method":"$/cancelRequest","params":false}""",
             """{"jsonrpc":"1.0","method":"run"}""",
             """{"jsonrpc":2.0,"method":"run"}""",
             """{"jsonrpc":null,"method":"run"}""",

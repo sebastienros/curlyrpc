@@ -255,6 +255,45 @@ public sealed partial class JsonRpc
         }
     }
 
+    private void ReserveInbound(int count, int bytes)
+    {
+        lock (_gate)
+        {
+            if ((_maximumPendingInboundRequests == 0 || count <= _maximumPendingInboundRequests - _pendingInboundRequests)
+                && (_maximumPendingInboundBytes == 0 || bytes <= _maximumPendingInboundBytes - _pendingInboundBytes))
+            {
+                _pendingInboundRequests += count;
+                _pendingInboundBytes += bytes;
+                return;
+            }
+        }
+
+        // Shutdown can invoke application cancellation callbacks; never hold the admission lock.
+        var error = new ConnectionLostException("The pending inbound request limit was exceeded.");
+        Shutdown(error);
+        RequestClose();
+        throw error;
+    }
+
+    // Only messages which cannot generate output bypass the budget. In particular ping replies
+    // must reserve admission too, otherwise a non-reading peer can accumulate unlimited writes.
+    private bool IsImmediateMessage(JsonElement message)
+    {
+        if (message.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (message.TryGetProperty("method", out JsonElement method))
+        {
+            return IsValidRequestEnvelope(message)
+                && !message.TryGetProperty("id", out _)
+                && method.GetString() == _cancellationMethodName;
+        }
+
+        return message.TryGetProperty("result", out _) || message.TryGetProperty("error", out _);
+    }
+
     private void HandleMessage(ReadOnlyMemory<byte> utf8)
     {
         JsonDocument document;
@@ -264,50 +303,99 @@ public sealed partial class JsonRpc
         }
         catch (JsonException)
         {
-            _ = SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.ParseError, "Parse error.");
+            ReserveInbound(1, utf8.Length);
+            _ = HandleAdmittedMessageAsync(default, 1, utf8.Length);
             return;
         }
 
         using (document)
         {
             JsonElement root = document.RootElement;
-            switch (root.ValueKind)
+            int count = 0;
+            if (root.ValueKind == JsonValueKind.Array)
             {
-                case JsonValueKind.Object:
-                    HandleSingleMessage(root);
-                    break;
+                // Correlate responses and cancellation before dispatching any batch handler. A
+                // handler may itself be awaiting a response carried later in this same batch.
+                foreach (JsonElement element in root.EnumerateArray())
+                {
+                    if (IsImmediateMessage(element))
+                    {
+                        _ = HandleSingleMessage(element);
+                    }
+                    else
+                    {
+                        count++;
+                    }
+                }
 
-                case JsonValueKind.Array:
-                    HandleBatchMessage(root);
-                    break;
-
-                default:
-                    // Per the spec, anything that is neither an Object nor a non-empty Array is an
-                    // Invalid Request and must be answered with a single error response (id: null).
-                    _ = SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.");
-                    break;
+                if (root.GetArrayLength() == 0)
+                {
+                    count = 1;
+                }
             }
+            else if (IsImmediateMessage(root))
+            {
+                _ = HandleSingleMessage(root);
+                return;
+            }
+            else
+            {
+                count = 1;
+            }
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            // Admission precedes cloning, task creation and throttle waiting.
+            ReserveInbound(count, utf8.Length);
+            _ = HandleAdmittedMessageAsync(root.Clone(), count, utf8.Length);
         }
     }
 
-    private void HandleBatchMessage(JsonElement array)
+    private async Task HandleAdmittedMessageAsync(JsonElement root, int count, int bytes)
     {
-        // An empty batch is not a valid Array of requests; reply with a single error object,
-        // not an array (JSON-RPC 2.0 §6).
-        if (array.GetArrayLength() == 0)
+        try
         {
-            _ = SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.");
-            return;
-        }
+            switch (root.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    await HandleSingleMessage(root).ConfigureAwait(false);
+                    break;
+                case JsonValueKind.Array when root.GetArrayLength() > 0:
+                    var elements = new List<JsonElement>();
+                    foreach (JsonElement element in root.EnumerateArray())
+                    {
+                        if (!IsImmediateMessage(element))
+                        {
+                            elements.Add(element);
+                        }
+                    }
 
-        // Detach the elements from the backing document so processing can outlive its disposal.
-        var elements = new List<JsonElement>(array.GetArrayLength());
-        foreach (JsonElement element in array.EnumerateArray())
+                    await HandleBatchAsync(elements).ConfigureAwait(false);
+                    break;
+                default:
+                    bool parseError = root.ValueKind == JsonValueKind.Undefined;
+                    await SendErrorAsync(RequestId.Null,
+                        parseError ? JsonRpcErrorCodes.ParseError : JsonRpcErrorCodes.InvalidRequest,
+                        parseError ? "Parse error." : "Invalid Request.").ConfigureAwait(false);
+                    break;
+            }
+        }
+        catch (Exception ex)
         {
-            elements.Add(element.Clone());
+            Shutdown(ex);
+            RequestClose();
         }
-
-        _ = HandleBatchAsync(elements);
+        finally
+        {
+            lock (_gate)
+            {
+                _pendingInboundRequests -= count;
+                _pendingInboundBytes -= bytes;
+            }
+        }
     }
 
     private async Task HandleBatchAsync(List<JsonElement> elements)
@@ -328,7 +416,7 @@ public sealed partial class JsonRpc
         byte[] frame = AssembleBatchArray(responses);
         try
         {
-            await _handler.WriteMessageAsync(frame, CancellationToken.None).ConfigureAwait(false);
+            await _handler.WriteMessageAsync(frame, _disposeCts.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
@@ -364,11 +452,7 @@ public sealed partial class JsonRpc
         bool validId = !hasId || idElement.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null;
         RequestId id = hasId && validId ? ReadRequestId(idElement) : RequestId.Null;
         bool hasParams = message.TryGetProperty("params", out JsonElement paramsElement);
-        if (!message.TryGetProperty("jsonrpc", out JsonElement version)
-            || version.ValueKind != JsonValueKind.String || version.GetString() != "2.0"
-            || !hasMethod || methodElement.ValueKind != JsonValueKind.String
-            || !validId
-            || (hasParams && paramsElement.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)))
+        if (!IsValidRequestEnvelope(message))
         {
             // Only a valid request without an id is a notification. Malformed envelopes must
             // receive Invalid Request even when no id was supplied.
@@ -387,6 +471,15 @@ public sealed partial class JsonRpc
         ReadInboundTraceContext(message, out string? traceParent, out string? traceState);
         return DispatchRequestAsync(id, method, @params, isNotification: !hasId, responses, traceParent, traceState);
     }
+
+    private static bool IsValidRequestEnvelope(JsonElement message)
+        => message.TryGetProperty("jsonrpc", out JsonElement version)
+            && version.ValueKind == JsonValueKind.String && version.GetString() == "2.0"
+            && message.TryGetProperty("method", out JsonElement method) && method.ValueKind == JsonValueKind.String
+            && (!message.TryGetProperty("id", out JsonElement id)
+                || id.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null)
+            && (!message.TryGetProperty("params", out JsonElement parameters)
+                || parameters.ValueKind is JsonValueKind.Object or JsonValueKind.Array);
 
     private static byte[] AssembleBatchArray(List<byte[]> responses)
     {
@@ -414,8 +507,8 @@ public sealed partial class JsonRpc
         return result;
     }
 
-    private void HandleSingleMessage(JsonElement message)
-        => _ = DispatchMessageAsync(message);
+    private Task HandleSingleMessage(JsonElement message)
+        => DispatchMessageAsync(message);
 
     private void HandleResponse(JsonElement message, JsonElement idElement)
     {
@@ -425,17 +518,29 @@ public sealed partial class JsonRpc
             return;
         }
 
-        if (message.TryGetProperty("error", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.Object)
+        // Once removed, this call is no longer covered by connection teardown. Every path
+        // below must settle it, including failures while validating or copying the response.
+        try
         {
-            call.Completion.TrySetException(CreateRemoteException(call.Method, errorElement));
+            bool hasError = message.TryGetProperty("error", out JsonElement errorElement);
+            bool hasResult = message.TryGetProperty("result", out JsonElement resultElement);
+            if (hasError == hasResult)
+            {
+                throw new JsonRpcException("Invalid JSON-RPC response: expected exactly one of 'result' or 'error'.");
+            }
+
+            if (hasError)
+            {
+                call.Completion.TrySetException(CreateRemoteException(call.Method, errorElement));
+            }
+            else
+            {
+                call.Completion.TrySetResult(resultElement.Clone());
+            }
         }
-        else if (message.TryGetProperty("result", out JsonElement resultElement))
+        catch (Exception ex)
         {
-            call.Completion.TrySetResult(resultElement.Clone());
-        }
-        else
-        {
-            call.Completion.TrySetResult(default);
+            call.Completion.TrySetException(ex);
         }
     }
 
@@ -463,6 +568,12 @@ public sealed partial class JsonRpc
             {
                 return; // The connection is shutting down.
             }
+        }
+
+        if (Volatile.Read(ref _shutdownFlag) != 0)
+        {
+            _inboundThrottle?.Release();
+            return;
         }
 
         CancellationTokenSource? cts = null;
@@ -515,7 +626,7 @@ public sealed partial class JsonRpc
 
             if (string.Equals(method, EnumeratorNextMethodName, StringComparison.Ordinal))
             {
-                await HandleEnumeratorNextAsync(id, @params, isNotification).ConfigureAwait(false);
+                await HandleEnumeratorNextAsync(id, @params, isNotification, batch).ConfigureAwait(false);
                 return;
             }
 
@@ -566,12 +677,16 @@ public sealed partial class JsonRpc
 
             if (result is RpcEnumerableResult enumerable)
             {
-                await SendEnumerableStartAsync(id, enumerable).ConfigureAwait(false);
+                await SendEnumerableStartAsync(id, enumerable, batch).ConfigureAwait(false);
             }
             else
             {
                 await SendResultAsync(id, result, batch).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested)
+        {
+            // Closing cancels pending response writes; do not enqueue another error reply.
         }
         catch (OperationCanceledException) when (cts is not null && cts.IsCancellationRequested)
         {
@@ -683,18 +798,22 @@ public sealed partial class JsonRpc
             return Task.CompletedTask;
         }
 
-        return _handler.WriteMessageAsync(bytes, CancellationToken.None).AsTask();
+        return _handler.WriteMessageAsync(bytes, _disposeCts.Token).AsTask();
     }
 
     private Exception CreateRemoteException(string method, JsonElement errorElement)
     {
-        int code = errorElement.TryGetProperty("code", out JsonElement codeElement) && codeElement.TryGetInt32(out int parsedCode)
-            ? parsedCode
-            : JsonRpcErrorCodes.InternalError;
+        if (errorElement.ValueKind != JsonValueKind.Object
+            || !errorElement.TryGetProperty("code", out JsonElement codeElement)
+            || codeElement.ValueKind != JsonValueKind.Number
+            || !codeElement.TryGetInt32(out int code)
+            || !errorElement.TryGetProperty("message", out JsonElement messageElement)
+            || messageElement.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonRpcException("Invalid JSON-RPC response: 'error' must contain an integer 'code' and a string 'message'.");
+        }
 
-        string message = errorElement.TryGetProperty("message", out JsonElement messageElement) && messageElement.ValueKind == JsonValueKind.String
-            ? messageElement.GetString()!
-            : "The remote peer returned an error.";
+        string message = messageElement.GetString()!;
 
         JsonElement? data = errorElement.TryGetProperty("data", out JsonElement dataElement)
             ? dataElement.Clone()
