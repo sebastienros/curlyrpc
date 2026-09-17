@@ -52,6 +52,10 @@ public sealed class JsonRpcOptions
     /// implement authentication (see <see cref="HandshakeAuthenticationMiddleware"/>) or other
     /// cross-cutting policies.
     /// </summary>
+    /// <remarks>
+    /// The middleware instance is used by reference. Follow its lifecycle requirements when reusing
+    /// options: <see cref="HandshakeAuthenticationMiddleware"/> requires a new instance per connection.
+    /// </remarks>
     public JsonRpcInboundMiddleware? InboundMiddleware { get; set; }
 
     /// <summary>
