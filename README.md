@@ -423,6 +423,11 @@ The built-in `HandshakeAuthenticationMiddleware` implements the token handshake 
 `microsoft/aspire`: a peer must call `authenticate(token)` before any other method. The token is
 compared in constant time; `ping` is allowed pre-auth; a wrong token closes the connection.
 
+Create a new middleware instance for each connection. Its first inbound request or notification
+(including `ping`) permanently binds it to that connection. Sharing the middleware, including by
+reusing the same options, causes requests on other connections to be rejected and those connections
+to be closed. Disposing the original connection does not make the middleware reusable.
+
 ```csharp
 await using var server = new JsonRpc(stream, new JsonRpcOptions
 {
