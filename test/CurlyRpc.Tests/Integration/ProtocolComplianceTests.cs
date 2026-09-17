@@ -265,7 +265,36 @@ public sealed class ProtocolComplianceTests
     }
 
     [TestMethod]
-    [DataRow("")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Object_WithOnlyId_IsInvalidRequestAndDoesNotCompletePendingCall(bool batch)
+    {
+        var (client, peer) = CreateClient();
+        await using var _ = client;
+
+        Task<int> call = client.InvokeAsync<int>("compute", 1);
+
+        using JsonDocument request = await ReadResponseAsync(peer);
+        int id = request.RootElement.GetProperty("id").GetInt32();
+
+        // An id alone does not identify a response; this is an invalid request envelope.
+        string envelope = $"{{\"jsonrpc\":\"2.0\",\"id\":{id}}}";
+        await peer.WriteMessageAsync(
+            Encoding.UTF8.GetBytes(batch ? $"[{envelope}]" : envelope),
+            CancellationToken.None);
+
+        using JsonDocument error = await ReadResponseAsync(peer);
+        JsonElement response = batch ? error.RootElement[0] : error.RootElement;
+        Assert.AreEqual(JsonRpcErrorCodes.InvalidRequest, response.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.IsFalse(call.IsCompleted);
+
+        await peer.WriteMessageAsync(
+            Encoding.UTF8.GetBytes($"{{\"jsonrpc\":\"2.0\",\"result\":42,\"id\":{id}}}"),
+            CancellationToken.None);
+        Assert.AreEqual(42, await call.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [TestMethod]
     [DataRow(",\"result\":42,\"error\":{\"code\":-32603,\"message\":\"bad\"}")]
     [DataRow(",\"error\":null")]
     [DataRow(",\"error\":[]")]

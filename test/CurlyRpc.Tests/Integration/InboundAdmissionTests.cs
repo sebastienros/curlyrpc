@@ -91,7 +91,11 @@ public sealed class InboundAdmissionTests
     [TestMethod]
     [DataRow("{broken")]
     [DataRow("[]")]
-    [DataRow("{\"method\":\"$/ping\",\"id\":1}")]
+    [DataRow("{\"jsonrpc\":\"2.0\",\"method\":\"$/ping\",\"id\":1}")]
+    [DataRow("{\"jsonrpc\":\"2.0\",\"method\":1,\"id\":1}")]
+    [DataRow("{\"jsonrpc\":\"2.0\",\"id\":1}")]
+    [DataRow("{\"method\":\"$/cancelRequest\",\"params\":{\"id\":1}}")]
+    [DataRow("{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":false}")]
     public async Task NonReadingPeer_ProtocolRepliesAlsoUseAdmission(string message)
     {
         await using var handler = new ControlledHandler { BlockWrites = true };
@@ -130,8 +134,8 @@ public sealed class InboundAdmissionTests
         handler.Send(Request(10));
         await started.Task.WaitAsync(Timeout);
         Task<int> outbound = rpc.InvokeAsync<int>("remote");
-        const string response = "{\"id\":1,\"result\":42}";
-        const string cancellation = "{\"method\":\"$/cancelRequest\",\"params\":{\"id\":10}}";
+        const string response = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":42}";
+        const string cancellation = "{\"jsonrpc\":\"2.0\",\"method\":\"$/cancelRequest\",\"params\":{\"id\":10}}";
         handler.Send(batch ? "[" + response + "," + cancellation + "]" : response);
         if (!batch) { handler.Send(cancellation); }
         Assert.AreEqual(42, await outbound.WaitAsync(Timeout));
@@ -154,7 +158,7 @@ public sealed class InboundAdmissionTests
         });
         rpc.StartListening();
         outbound = rpc.InvokeAsync<int>("remote");
-        handler.Send("[" + Request(10) + ",{\"id\":1,\"result\":42}]");
+        handler.Send("[" + Request(10) + ",{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":42}]");
         Assert.AreEqual(42, await finished.Task.WaitAsync(Timeout));
     }
 
@@ -175,7 +179,7 @@ public sealed class InboundAdmissionTests
         Assert.AreEqual(2, handler.WriteCount);
     }
 
-    private static string Request(int id) => $"{{\"method\":\"work\",\"id\":{id},\"params\":{{\"payload\":\"{new string('x', 1024)}\"}}}}";
+    private static string Request(int id) => $"{{\"jsonrpc\":\"2.0\",\"method\":\"work\",\"id\":{id},\"params\":{{\"payload\":\"{new string('x', 1024)}\"}}}}";
 
     private sealed class ControlledHandler : IJsonRpcMessageHandler
     {
