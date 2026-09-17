@@ -50,18 +50,18 @@ public sealed partial class JsonRpc
 
         bool finished = ReadFinished(start);
 
-        foreach (T value in EnumerateValues<T>(start))
-        {
-            yield return value;
-        }
-
-        if (finished || token is null)
-        {
-            yield break;
-        }
-
         try
         {
+            foreach (T value in EnumerateValues<T>(start))
+            {
+                yield return value;
+            }
+
+            if (finished || token is null)
+            {
+                yield break;
+            }
+
             while (!finished)
             {
                 JsonElement batch = await InvokeCoreAsync(
@@ -79,7 +79,7 @@ public sealed partial class JsonRpc
         }
         finally
         {
-            if (!finished)
+            if (!finished && token is not null)
             {
                 try
                 {
