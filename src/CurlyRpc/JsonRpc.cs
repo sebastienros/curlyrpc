@@ -25,6 +25,10 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     private readonly string _cancellationMethodName;
     private readonly JsonRpcInboundMiddleware? _inboundMiddleware;
     private readonly SemaphoreSlim? _inboundThrottle;
+    private readonly int _maximumPendingInboundRequests;
+    private readonly long _maximumPendingInboundBytes;
+    private int _pendingInboundRequests;
+    private long _pendingInboundBytes;
     private readonly bool _exposeExceptionDetails;
     private readonly bool _propagateTraceContext;
     private readonly TimeSpan _keepAliveInterval;
@@ -64,6 +68,10 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(messageHandler);
         _handler = messageHandler;
         _options = options ?? new JsonRpcOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumPendingInboundRequests);
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumPendingInboundBytes);
+        _maximumPendingInboundRequests = _options.MaximumPendingInboundRequests;
+        _maximumPendingInboundBytes = _options.MaximumPendingInboundBytes;
         _cancellationMethodName = _options.CancellationMethodName;
         _inboundMiddleware = _options.InboundMiddleware;
         _serializerOptions = ResolveSerializerOptions(_options.SerializerOptions);
@@ -364,7 +372,7 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
 
         Shutdown(null);
 
-        _inboundThrottle?.Dispose();
+        // Dispatches may still be unwinding and releasing the semaphore.
 
         if (_options.DisposeHandlerOnDispose)
         {
