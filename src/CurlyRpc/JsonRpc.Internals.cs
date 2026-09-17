@@ -653,7 +653,7 @@ public sealed partial class JsonRpc
 
             if (string.Equals(method, EnumeratorNextMethodName, StringComparison.Ordinal))
             {
-                await HandleEnumeratorNextAsync(id, @params, isNotification).ConfigureAwait(false);
+                await HandleEnumeratorNextAsync(id, @params, isNotification, batch).ConfigureAwait(false);
                 return;
             }
 
@@ -704,7 +704,7 @@ public sealed partial class JsonRpc
 
             if (result is RpcEnumerableResult enumerable)
             {
-                await SendEnumerableStartAsync(id, enumerable).ConfigureAwait(false);
+                await SendEnumerableStartAsync(id, enumerable, batch).ConfigureAwait(false);
             }
             else
             {

@@ -335,6 +335,138 @@ public sealed class ProtocolComplianceTests
         CollectionAssert.AreEqual(new[] { 0, 1, 2 }, values.ToArray());
     }
 
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(2)]
+    public async Task Batch_WithStreamStart_ReturnsOneArrayAndOmitsNotifications(int count)
+    {
+        var (server, peer) = CreateServer(rpc => rpc.AddLocalRpcMethod("count", (int n) => Count(n)));
+        await using var _ = server;
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes($$$"""
+            [
+              {"jsonrpc":"2.0","method":"count","params":[{{{count}}}],"id":1},
+              {"jsonrpc":"2.0","method":"count","params":[2]},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":-1}},
+              {"jsonrpc":"2.0","method":"echo","params":[7]},
+              {"jsonrpc":"2.0","method":"echo","params":[42],"id":2}
+            ]
+            """), CancellationToken.None);
+
+        using JsonDocument doc = await ReadResponseAsync(peer);
+        Dictionary<int, JsonElement> replies = ReadBatchReplies(doc, 2);
+        JsonElement result = replies[1].GetProperty("result");
+        Assert.AreEqual(count == 0, result.GetProperty("finished").GetBoolean());
+        Assert.AreEqual(count == 0 ? 0 : 1, result.GetProperty("values").GetArrayLength());
+        Assert.AreEqual(count != 0, result.TryGetProperty("token", out JsonElement tokenElement));
+        Assert.AreEqual(42, replies[2].GetProperty("result").GetInt32());
+        await AssertNoExtraResponseAsync(peer);
+    }
+
+    [TestMethod]
+    public async Task Batch_WithStreamNextAndCompletion_ReturnsOneArray()
+    {
+        var (server, peer) = CreateServer(rpc => rpc.AddLocalRpcMethod("count", (int n) => Count(n)));
+        await using var _ = server;
+        long token = await StartStreamAsync(peer, "count", "[2]");
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes($$$"""
+            [
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":{{{token}}}}},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":{{{token}}}},"id":1},
+              {"jsonrpc":"2.0","method":"echo","params":[42],"id":2},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":[{{{token}}}],"id":3},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":{{{token}}}},"id":4}
+            ]
+            """), CancellationToken.None);
+
+        using JsonDocument doc = await ReadResponseAsync(peer);
+        Dictionary<int, JsonElement> replies = ReadBatchReplies(doc, 4);
+        JsonElement next = replies[1].GetProperty("result");
+        Assert.AreEqual(1, next.GetProperty("values")[0].GetInt32());
+        Assert.IsFalse(next.GetProperty("finished").GetBoolean());
+        Assert.AreEqual(42, replies[2].GetProperty("result").GetInt32());
+        JsonElement completed = replies[3].GetProperty("result");
+        Assert.IsTrue(completed.GetProperty("finished").GetBoolean());
+        Assert.AreEqual(0, completed.GetProperty("values").GetArrayLength());
+        Assert.AreEqual(JsonRpcErrorCodes.InvalidParams, replies[4].GetProperty("error").GetProperty("code").GetInt32());
+        await AssertNoExtraResponseAsync(peer);
+    }
+
+    [TestMethod]
+    public async Task Batch_WithStreamFailures_ReturnsErrorsInOneArray()
+    {
+        var (server, peer) = CreateServer(rpc => rpc.AddLocalRpcMethod("fail", (bool immediately) => FailingStream(immediately)));
+        await using var _ = server;
+        long token = await StartStreamAsync(peer, "fail", "[false]");
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes($$$"""
+            [
+              {"jsonrpc":"2.0","method":"fail","params":[true],"id":1},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":{{{token}}}},"id":2},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{"token":{{{token}}}},"id":3},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{},"id":4},
+              {"jsonrpc":"2.0","method":"fail","params":[true]},
+              {"jsonrpc":"2.0","method":"$/enumerator/next","params":{}},
+              {"jsonrpc":"2.0","method":"echo","params":[42],"id":5}
+            ]
+            """), CancellationToken.None);
+
+        using JsonDocument doc = await ReadResponseAsync(peer);
+        Dictionary<int, JsonElement> replies = ReadBatchReplies(doc, 5);
+        foreach (int id in new[] { 1, 2 })
+        {
+            Assert.AreEqual(JsonRpcErrorCodes.InternalError, replies[id].GetProperty("error").GetProperty("code").GetInt32());
+        }
+
+        foreach (int id in new[] { 3, 4 })
+        {
+            Assert.AreEqual(JsonRpcErrorCodes.InvalidParams, replies[id].GetProperty("error").GetProperty("code").GetInt32());
+        }
+
+        Assert.AreEqual(42, replies[5].GetProperty("result").GetInt32());
+        await AssertNoExtraResponseAsync(peer);
+    }
+
+    private static Dictionary<int, JsonElement> ReadBatchReplies(JsonDocument document, int count)
+    {
+        Assert.AreEqual(JsonValueKind.Array, document.RootElement.ValueKind);
+        Assert.AreEqual(count, document.RootElement.GetArrayLength());
+        return document.RootElement.EnumerateArray().ToDictionary(reply => reply.GetProperty("id").GetInt32());
+    }
+
+    private static async Task<long> StartStreamAsync(HeaderDelimitedMessageHandler peer, string method, string parameters)
+    {
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes($$$"""
+            {"jsonrpc":"2.0","method":"{{{method}}}","params":{{{parameters}}},"id":10}
+            """), CancellationToken.None);
+        using JsonDocument doc = await ReadResponseAsync(peer);
+        return doc.RootElement.GetProperty("result").GetProperty("token").GetInt64();
+    }
+
+    private static async Task AssertNoExtraResponseAsync(HeaderDelimitedMessageHandler peer)
+    {
+        // The completed batch must leave no standalone streaming replies queued before this probe.
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes("""
+            {"jsonrpc":"2.0","method":"echo","params":[99],"id":99}
+            """), CancellationToken.None);
+        using JsonDocument doc = await ReadResponseAsync(peer);
+        Assert.AreEqual(JsonValueKind.Object, doc.RootElement.ValueKind);
+        Assert.AreEqual(99, doc.RootElement.GetProperty("id").GetInt32());
+        Assert.AreEqual(99, doc.RootElement.GetProperty("result").GetInt32());
+    }
+
+    private static async IAsyncEnumerable<int> FailingStream(bool immediately)
+    {
+        await Task.Yield();
+        if (!immediately)
+        {
+            yield return 0;
+        }
+
+        throw new InvalidOperationException("Stream failed.");
+    }
+
     private static async IAsyncEnumerable<int> Count(int n)
     {
         for (int i = 0; i < n; i++)
@@ -344,7 +476,7 @@ public sealed class ProtocolComplianceTests
         }
     }
 
-    private static (JsonRpc Server, HeaderDelimitedMessageHandler ClientHandler) CreateServer()
+    private static (JsonRpc Server, HeaderDelimitedMessageHandler ClientHandler) CreateServer(Action<JsonRpc>? configure = null)
     {
         var pipe1 = new PipeStream();
         var pipe2 = new PipeStream();
@@ -353,6 +485,7 @@ public sealed class ProtocolComplianceTests
 
         var server = new JsonRpc(serverHandler, Options());
         server.AddLocalRpcMethod("echo", (int x) => x);
+        configure?.Invoke(server);
         server.StartListening();
         return (server, clientHandler);
     }
