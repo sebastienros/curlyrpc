@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CurlyRpc.Tests.Harness;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -11,10 +12,10 @@ public sealed class StreamingTests
     private static JsonRpcOptions Options()
         => new() { SerializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web) };
 
-    private static (JsonRpc Client, JsonRpc Server) CreatePair()
+    private static (JsonRpc Client, JsonRpc Server) CreatePair(JsonRpcOptions? serverOptions = null)
     {
         var (h1, h2) = DuplexConnection.CreateHandlerPair();
-        return (new JsonRpc(h1, Options()), new JsonRpc(h2, Options()));
+        return (new JsonRpc(h1, Options()), new JsonRpc(h2, serverOptions ?? Options()));
     }
 
     [TestMethod]
@@ -105,6 +106,105 @@ public sealed class StreamingTests
         // generator's finally is the shutdown drain.
         await server.DisposeAsync();
         await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [TestMethod]
+    [DataRow("default", "iterator")]
+    [DataRow("scrubbed", "iterator")]
+    [DataRow("hardened", "iterator")]
+    [DataRow("default", "serialization")]
+    [DataRow("scrubbed", "serialization")]
+    [DataRow("hardened", "serialization")]
+    [DataRow("default", "local")]
+    [DataRow("scrubbed", "local")]
+    [DataRow("hardened", "local")]
+    public async Task LaterBatchFault_UsesDispatchErrorPolicy(string policy, string fault)
+    {
+        const string privateMessage = "dummy-secret at /private/service/config.json";
+        const string publicMessage = "The requested stream is unavailable.";
+        const int publicCode = -32042;
+        JsonRpcOptions options = policy == "hardened"
+            ? JsonRpcOptions.CreateHardened(Options().SerializerOptions)
+            : Options();
+        if (policy == "scrubbed")
+        {
+            options.ExposeExceptionDetails = false;
+        }
+
+        if (fault == "serialization")
+        {
+            options.SerializerOptions!.Converters.Add(new FailingSecondItemConverter(privateMessage));
+        }
+
+        var (client, server) = CreatePair(options);
+        await using var _c = client;
+        await using var _s = server;
+        var disposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Exception? failure = fault switch
+        {
+            "iterator" => new InvalidOperationException(privateMessage),
+            "local" => new LocalRpcException(publicMessage, publicCode, "public-data"),
+            _ => null,
+        };
+        server.AddLocalRpcMethod("fault", () => FaultingSequence(failure, disposed));
+        server.StartListening();
+        client.StartListening();
+
+        await using var enumerator = client.InvokeAsyncEnumerable<int>("fault").GetAsyncEnumerator();
+        Assert.IsTrue(await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.AreEqual(1, enumerator.Current);
+
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(async () =>
+            await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.AreEqual(fault == "local" ? publicCode : JsonRpcErrorCodes.InternalError, ex.ErrorCode);
+        Assert.AreEqual(fault == "local" ? publicMessage
+            : policy == "default" ? privateMessage : "An internal error occurred.", ex.Message);
+        if (fault == "local")
+        {
+            Assert.AreEqual("public-data", ex.ErrorData?.GetString());
+        }
+        else
+        {
+            Assert.IsNull(ex.ErrorData);
+        }
+
+        await disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private static async IAsyncEnumerable<int> FaultingSequence(Exception? failure, TaskCompletionSource disposed)
+    {
+        try
+        {
+            await Task.Yield();
+            yield return 1;
+            if (failure is not null)
+            {
+                throw failure;
+            }
+
+            yield return 2;
+        }
+        finally
+        {
+            disposed.TrySetResult();
+        }
+    }
+
+    private sealed class FailingSecondItemConverter(string message) : JsonConverter<int>
+    {
+        public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => reader.GetInt32();
+
+        public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options)
+        {
+            if (value == 2)
+            {
+                throw new InvalidOperationException(message);
+            }
+
+            writer.WriteNumberValue(value);
+        }
     }
 
     private static async IAsyncEnumerable<int> Range(int count, [EnumeratorCancellation] CancellationToken cancellationToken)
