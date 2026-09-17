@@ -974,15 +974,23 @@ public sealed partial class JsonRpc
 
         _inboundCancellations.Clear();
 
-        foreach (KeyValuePair<long, RpcEnumerableResult> enumerator in _enumerators)
+        // Serialize the drain with registration so a start cannot publish after shutdown.
+        List<RpcEnumerableResult> enumerators = new();
+        lock (_gate)
         {
-            if (_enumerators.TryRemove(enumerator.Key, out RpcEnumerableResult? enumerable))
+            foreach (KeyValuePair<long, RpcEnumerableResult> enumerator in _enumerators)
             {
-                _ = DisposeEnumeratorAsync(enumerable);
+                if (_enumerators.TryRemove(enumerator.Key, out RpcEnumerableResult? enumerable))
+                {
+                    enumerators.Add(enumerable);
+                }
             }
         }
 
-        _enumerators.Clear();
+        foreach (RpcEnumerableResult enumerable in enumerators)
+        {
+            _ = DisposeReservedEnumeratorAsync(enumerable);
+        }
 
         if (completionError is null)
         {

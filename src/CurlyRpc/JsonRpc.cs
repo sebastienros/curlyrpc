@@ -44,6 +44,8 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
 
     private long _nextId;
     private long _nextEnumeratorToken;
+    private readonly int _maximumActiveEnumerations;
+    private int _activeEnumerations;
     private bool _listeningStarted;
     private bool _disposed;
     private int _shutdownFlag;
@@ -64,6 +66,8 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(messageHandler);
         _handler = messageHandler;
         _options = options ?? new JsonRpcOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumActiveEnumerations);
+        _maximumActiveEnumerations = _options.MaximumActiveEnumerations;
         _cancellationMethodName = _options.CancellationMethodName;
         _inboundMiddleware = _options.InboundMiddleware;
         _serializerOptions = ResolveSerializerOptions(_options.SerializerOptions);

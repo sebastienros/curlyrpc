@@ -106,6 +106,19 @@ public sealed class JsonRpcOptions
     public int MaximumConcurrentRequests { get; set; }
 
     /// <summary>
+    /// Maximum server-side streaming enumerations, including starts reading their first batch and
+    /// enumerators being disposed. Zero (the default) means unlimited; negative values are invalid.
+    /// At capacity, a new streaming result is disposed without advancing it and the request fails
+    /// with <see cref="JsonRpcErrorCodes.EnumerationLimitExceeded"/>. Capacity is released after
+    /// completion, abort, failure, or connection shutdown disposes the enumerator.
+    /// </summary>
+    /// <remarks>
+    /// There is no idle expiry: abandoned streams retain their slots until abort or disconnect.
+    /// Choose a finite limit for untrusted peers. This limit is independent of request concurrency.
+    /// </remarks>
+    public int MaximumActiveEnumerations { get; set; }
+
+    /// <summary>
     /// When <see langword="true"/> (the default), an unhandled exception thrown by a local handler is
     /// reported to the caller with the exception's <see cref="System.Exception.Message"/>. Set to
     /// <see langword="false"/> for connections exposed to untrusted peers so unexpected failures return
@@ -160,6 +173,7 @@ public sealed class JsonRpcOptions
     ///   <item><description><see cref="MaximumInboundMessageSize"/> = 4 MiB
     ///   (<see cref="DefaultHardenedMaximumInboundMessageSize"/>).</description></item>
     ///   <item><description><see cref="MaximumConcurrentRequests"/> = <c>Environment.ProcessorCount * 16</c>.</description></item>
+    ///   <item><description><see cref="MaximumActiveEnumerations"/> = 128.</description></item>
     ///   <item><description><see cref="ExposeExceptionDetails"/> = <see langword="false"/>.</description></item>
     /// </list>
     /// <para>
@@ -180,6 +194,7 @@ public sealed class JsonRpcOptions
         SerializerOptions = serializerOptions,
         MaximumInboundMessageSize = DefaultHardenedMaximumInboundMessageSize,
         MaximumConcurrentRequests = Environment.ProcessorCount * 16,
+        MaximumActiveEnumerations = 128,
         ExposeExceptionDetails = false,
     };
 }

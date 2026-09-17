@@ -489,9 +489,15 @@ await using var server = new JsonRpc(stream, options);
 ```
 
 `CreateHardened()` sets `MaximumInboundMessageSize = 4 MiB`, `MaximumConcurrentRequests =
-ProcessorCount × 16`, and `ExposeExceptionDetails = false`. Keep-alive
+ProcessorCount × 16`, `MaximumActiveEnumerations = 128`, and `ExposeExceptionDetails = false`. Keep-alive
 is left disabled because the right interval is transport-specific — set `KeepAliveInterval` yourself if
 the transport can silently half-open.
+
+`MaximumActiveEnumerations` bounds server-side streams independently of request concurrency.
+At capacity, new streaming results are disposed without advancing and rejected with error `-32001`.
+Slots include first-batch reads and disposal, and are released on completion, abort, failure, or
+shutdown. The normal default is zero (unlimited). Streams have no idle expiry, so abandoned streams
+occupy bounded capacity until abort or disconnect; size the limit for legitimate slow consumers.
 
 ### Deserialization safety (a permanent invariant)
 
