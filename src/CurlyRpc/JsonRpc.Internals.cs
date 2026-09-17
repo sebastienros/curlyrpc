@@ -460,17 +460,29 @@ public sealed partial class JsonRpc
             return;
         }
 
-        if (message.TryGetProperty("error", out JsonElement errorElement) && errorElement.ValueKind == JsonValueKind.Object)
+        // Once removed, this call is no longer covered by connection teardown. Every path
+        // below must settle it, including failures while validating or copying the response.
+        try
         {
-            call.Completion.TrySetException(CreateRemoteException(call.Method, errorElement));
+            bool hasError = message.TryGetProperty("error", out JsonElement errorElement);
+            bool hasResult = message.TryGetProperty("result", out JsonElement resultElement);
+            if (hasError == hasResult)
+            {
+                throw new JsonRpcException("Invalid JSON-RPC response: expected exactly one of 'result' or 'error'.");
+            }
+
+            if (hasError)
+            {
+                call.Completion.TrySetException(CreateRemoteException(call.Method, errorElement));
+            }
+            else
+            {
+                call.Completion.TrySetResult(resultElement.Clone());
+            }
         }
-        else if (message.TryGetProperty("result", out JsonElement resultElement))
+        catch (Exception ex)
         {
-            call.Completion.TrySetResult(resultElement.Clone());
-        }
-        else
-        {
-            call.Completion.TrySetResult(default);
+            call.Completion.TrySetException(ex);
         }
     }
 
@@ -723,13 +735,17 @@ public sealed partial class JsonRpc
 
     private Exception CreateRemoteException(string method, JsonElement errorElement)
     {
-        int code = errorElement.TryGetProperty("code", out JsonElement codeElement) && codeElement.TryGetInt32(out int parsedCode)
-            ? parsedCode
-            : JsonRpcErrorCodes.InternalError;
+        if (errorElement.ValueKind != JsonValueKind.Object
+            || !errorElement.TryGetProperty("code", out JsonElement codeElement)
+            || codeElement.ValueKind != JsonValueKind.Number
+            || !codeElement.TryGetInt32(out int code)
+            || !errorElement.TryGetProperty("message", out JsonElement messageElement)
+            || messageElement.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonRpcException("Invalid JSON-RPC response: 'error' must contain an integer 'code' and a string 'message'.");
+        }
 
-        string message = errorElement.TryGetProperty("message", out JsonElement messageElement) && messageElement.ValueKind == JsonValueKind.String
-            ? messageElement.GetString()!
-            : "The remote peer returned an error.";
+        string message = messageElement.GetString()!;
 
         JsonElement? data = errorElement.TryGetProperty("data", out JsonElement dataElement)
             ? dataElement.Clone()
