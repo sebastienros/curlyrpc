@@ -52,6 +52,10 @@ public sealed class JsonRpcOptions
     /// implement authentication (see <see cref="HandshakeAuthenticationMiddleware"/>) or other
     /// cross-cutting policies.
     /// </summary>
+    /// <remarks>
+    /// The middleware instance is used by reference. Follow its lifecycle requirements when reusing
+    /// options: <see cref="HandshakeAuthenticationMiddleware"/> requires a new instance per connection.
+    /// </remarks>
     public JsonRpcInboundMiddleware? InboundMiddleware { get; set; }
 
     /// <summary>
@@ -104,6 +108,22 @@ public sealed class JsonRpcOptions
     /// Responses to this peer's own outbound calls are never throttled.
     /// </summary>
     public int MaximumConcurrentRequests { get; set; }
+
+    /// <summary>
+    /// Maximum admitted inbound requests, notifications and protocol-error replies, including queued
+    /// dispatches and responses awaiting transport writes. Batch elements count individually and retain
+    /// their reservations until the batch reply is written. Zero (the default) means unlimited.
+    /// Exceeding the limit faults and closes the connection without queuing an overload response.
+    /// Responses and cancellation notifications bypass admission so duplex calls can make progress.
+    /// </summary>
+    public int MaximumPendingInboundRequests { get; set; }
+
+    /// <summary>
+    /// Maximum total UTF-8 frame bytes retained by admitted inbound work. A batch reserves its entire
+    /// frame until its reply is written. Zero (the default) means unlimited. This bounds input retention,
+    /// not handler allocations or serialized response sizes. Exceeding it closes the connection.
+    /// </summary>
+    public long MaximumPendingInboundBytes { get; set; }
 
     /// <summary>
     /// When <see langword="true"/> (the default), an unhandled exception thrown by a local handler is
@@ -160,6 +180,8 @@ public sealed class JsonRpcOptions
     ///   <item><description><see cref="MaximumInboundMessageSize"/> = 4 MiB
     ///   (<see cref="DefaultHardenedMaximumInboundMessageSize"/>).</description></item>
     ///   <item><description><see cref="MaximumConcurrentRequests"/> = <c>Environment.ProcessorCount * 16</c>.</description></item>
+    ///   <item><description><see cref="MaximumPendingInboundRequests"/> = <c>Environment.ProcessorCount * 64</c>.</description></item>
+    ///   <item><description><see cref="MaximumPendingInboundBytes"/> = 16 MiB.</description></item>
     ///   <item><description><see cref="ExposeExceptionDetails"/> = <see langword="false"/>.</description></item>
     /// </list>
     /// <para>
@@ -180,6 +202,8 @@ public sealed class JsonRpcOptions
         SerializerOptions = serializerOptions,
         MaximumInboundMessageSize = DefaultHardenedMaximumInboundMessageSize,
         MaximumConcurrentRequests = Environment.ProcessorCount * 16,
+        MaximumPendingInboundRequests = Environment.ProcessorCount * 64,
+        MaximumPendingInboundBytes = 16 * 1024 * 1024,
         ExposeExceptionDetails = false,
     };
 }

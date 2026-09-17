@@ -152,6 +152,33 @@ public sealed class HeaderDelimitedMessageHandlerTests
         Assert.AreEqual("[1,2]", await ReadStringAsync(handler));
     }
 
+    [TestMethod]
+    [DataRow(5, 5)]
+    [DataRow(6, 5)]
+    [DataRow(100, 100)]
+    [DataRow(101, 100)]
+    public async Task SizeLimit_CountsOnlyBodyAcrossReadBoundaries(int bodyLength, int maximumMessageSize)
+    {
+        string payload = "\"" + new string('x', bodyLength - 2) + "\"";
+        byte[] wire = Utf8($"Content-Type: application/json\r\nContent-Length: {bodyLength}\r\n\r\n{payload}");
+        for (int chunkSize = wire.Length; chunkSize >= 1; chunkSize--)
+        {
+            using var input = new ChunkedReadStream(wire, chunkSize);
+            using var handler = new HeaderDelimitedMessageHandler(Stream.Null, input, maximumMessageSize: maximumMessageSize);
+            if (bodyLength <= maximumMessageSize)
+            {
+                Assert.AreEqual(payload, await ReadStringAsync(handler), $"Chunk size: {chunkSize}");
+                Assert.IsNull(await handler.ReadMessageAsync(CancellationToken.None));
+            }
+            else
+            {
+                var ex = await Assert.ThrowsExactlyAsync<JsonRpcMessageTooLargeException>(
+                    async () => await handler.ReadMessageAsync(CancellationToken.None), $"Chunk size: {chunkSize}");
+                Assert.AreEqual(maximumMessageSize, ex.MaximumMessageSize);
+            }
+        }
+    }
+
     private static async Task<byte[]> FrameAsync(params string[] messages)
     {
         using var output = new MemoryStream();

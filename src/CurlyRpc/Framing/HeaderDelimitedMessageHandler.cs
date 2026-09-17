@@ -82,6 +82,12 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         return true;
     }
 
+    private protected override void ValidateIncompleteFrameSize(ReadOnlySpan<byte> available)
+    {
+        // TryReadFrame validates the declared body length as soon as the headers are complete.
+        // The buffered byte count includes headers and must not be compared with a body-size cap.
+    }
+
     /// <inheritdoc />
     protected override async ValueTask WriteFrameAsync(ReadOnlyMemory<byte> body)
     {
