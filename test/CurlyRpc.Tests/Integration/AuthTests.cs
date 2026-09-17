@@ -19,15 +19,116 @@ public sealed class AuthTests
             InboundMiddleware = new HandshakeAuthenticationMiddleware(Token),
         };
 
-    private static (JsonRpc Client, JsonRpc Server) CreatePair()
+    private static (JsonRpc Client, JsonRpc Server) CreatePair(JsonRpcOptions? serverOptions = null)
     {
         var (h1, h2) = DuplexConnection.CreateHandlerPair();
         var client = new JsonRpc(h1, ClientOptions());
-        var server = new JsonRpc(h2, ServerOptions());
+        var server = new JsonRpc(h2, serverOptions ?? ServerOptions());
         server.AddLocalRpcMethod("echo", (string s) => s);
         server.StartListening();
         client.StartListening();
         return (client, server);
+    }
+
+    [TestMethod]
+    [DataRow("echo")]
+    [DataRow("ping")]
+    [DataRow("authenticate")]
+    public async Task SharedMiddleware_RejectsSecondConnection(string method)
+    {
+        var options = ServerOptions();
+        var (clientA, serverA) = CreatePair(options);
+        await using var _ca = clientA;
+        await using var _sa = serverA;
+        var (clientB, serverB) = CreatePair(options);
+        await using var _cb = clientB;
+        await using var _sb = serverB;
+
+        Assert.IsTrue(await clientA.InvokeAsync<bool>("authenticate", Token));
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(
+            async () => await clientB.InvokeAsync<JsonElement>(method, Token));
+
+        Assert.AreEqual(HandshakeAuthenticationMiddleware.AuthenticationFailedErrorCode, ex.ErrorCode);
+        await serverB.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual("still authenticated", await clientA.InvokeAsync<string>("echo", "still authenticated"));
+    }
+
+    [TestMethod]
+    public async Task SharedMiddleware_ConcurrentHandshakes_OnlyOneConnectionSucceeds()
+    {
+        var options = ServerOptions();
+        var (clientA, serverA) = CreatePair(options);
+        await using var _ca = clientA;
+        await using var _sa = serverA;
+        var (clientB, serverB) = CreatePair(options);
+        await using var _cb = clientB;
+        await using var _sb = serverB;
+
+        var results = await Task.WhenAll(Authenticate(clientA), Authenticate(clientB))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreNotEqual(results[0], results[1]);
+        var winner = results[0] ? clientA : clientB;
+        var rejectedServer = results[0] ? serverB : serverA;
+        Assert.AreEqual("authorized", await winner.InvokeAsync<string>("echo", "authorized"));
+        await rejectedServer.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        static async Task<bool> Authenticate(JsonRpc client)
+        {
+            try
+            {
+                return await client.InvokeAsync<bool>("authenticate", Token);
+            }
+            catch (RemoteInvocationException ex)
+            {
+                Assert.AreEqual(HandshakeAuthenticationMiddleware.AuthenticationFailedErrorCode, ex.ErrorCode);
+                return false;
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task SharedMiddleware_PreAuthenticationPing_BindsConnection()
+    {
+        var options = ServerOptions();
+        var middleware = (HandshakeAuthenticationMiddleware)options.InboundMiddleware!;
+        var (clientA, serverA) = CreatePair(options);
+        await using var _ca = clientA;
+        await using var _sa = serverA;
+        var (clientB, serverB) = CreatePair(options);
+        await using var _cb = clientB;
+        await using var _sb = serverB;
+
+        Assert.IsTrue(await clientA.InvokeAsync<bool>("ping"));
+        Assert.IsFalse(middleware.IsAuthenticated);
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(
+            async () => await clientB.InvokeAsync<bool>("authenticate", Token));
+        Assert.AreEqual(HandshakeAuthenticationMiddleware.AuthenticationFailedErrorCode, ex.ErrorCode);
+        Assert.IsFalse(middleware.IsAuthenticated);
+        await serverB.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.IsTrue(await clientA.InvokeAsync<bool>("authenticate", Token));
+        Assert.IsTrue(middleware.IsAuthenticated);
+    }
+
+    [TestMethod]
+    public async Task SharedMiddleware_CannotBeReusedAfterOwnerIsDisposed()
+    {
+        var options = ServerOptions();
+        var (clientA, serverA) = CreatePair(options);
+        await using (clientA)
+        await using (serverA)
+        {
+            Assert.IsTrue(await clientA.InvokeAsync<bool>("authenticate", Token));
+        }
+
+        var (clientB, serverB) = CreatePair(options);
+        await using var _cb = clientB;
+        await using var _sb = serverB;
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(
+            async () => await clientB.InvokeAsync<string>("echo", "unauthenticated"));
+        Assert.AreEqual(HandshakeAuthenticationMiddleware.AuthenticationFailedErrorCode, ex.ErrorCode);
+        await serverB.Completion.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
     [TestMethod]

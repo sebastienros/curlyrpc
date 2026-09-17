@@ -11,6 +11,10 @@ namespace CurlyRpc;
 /// <see cref="CryptographicOperations.FixedTimeEquals(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>.
 /// </summary>
 /// <remarks>
+/// Each instance belongs to a single connection. The first inbound request or notification binds
+/// the instance to that connection, including a pre-authentication ping. Reuse on any other
+/// connection is rejected and closes that connection, even after the original connection is disposed.
+/// Create a new middleware instance for each connection; do not share options containing this instance.
 /// <list type="bullet">
 /// <item><description><c>ping</c> is always permitted (liveness probe before authentication).</description></item>
 /// <item><description><c>authenticate</c> validates the supplied token.</description></item>
@@ -30,6 +34,7 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
     private readonly byte[] _expectedToken;
     private readonly string _authenticateMethodName;
     private readonly string _pingMethodName;
+    private JsonRpc? _connection;
     private volatile bool _authenticated;
 
     /// <summary>Creates the middleware with a UTF-8 string secret.</summary>
@@ -61,6 +66,17 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
         JsonRpcRequestContext context,
         CancellationToken cancellationToken)
     {
+        // Bind atomically before checking authentication, including when two connections race
+        // their first requests. Ownership is permanent and is never reset on disposal.
+        var owner = Interlocked.CompareExchange(ref _connection, context.Connection, null);
+        if (owner is not null && !ReferenceEquals(owner, context.Connection))
+        {
+            return new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Reject(
+                AuthenticationFailedErrorCode,
+                "Authentication middleware cannot be shared between connections.",
+                closeConnection: true));
+        }
+
         if (string.Equals(context.Method, _pingMethodName, StringComparison.Ordinal))
         {
             return new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Respond(true));
