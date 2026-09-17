@@ -148,21 +148,17 @@ public sealed partial class JsonRpc
                 .ReadBatchAsync(_serializerOptions, EnumeratorBatchSize, _disposeCts.Token)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch
         {
             // A faulted iterator (or a serialization failure) must not strand the enumerator in the
-            // registry; remove and dispose it, then report the error to the consumer.
+            // registry; remove and dispose it, then let dispatch apply the same error policy as
+            // the initial call (including exception detail scrubbing and deliberate RPC errors).
             if (_enumerators.TryRemove(token, out RpcEnumerableResult? failed))
             {
                 await failed.DisposeAsync().ConfigureAwait(false);
             }
 
-            if (ex is not OperationCanceledException)
-            {
-                await SendErrorAsync(id, JsonRpcErrorCodes.InternalError, ex.Message, batch: batch).ConfigureAwait(false);
-            }
-
-            return;
+            throw;
         }
 
         if (finished && _enumerators.TryRemove(token, out RpcEnumerableResult? completed))
