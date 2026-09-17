@@ -57,7 +57,8 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
     - name: Publish AOT smoke app
-      run: dotnet publish test/CurlyRpc.AotSmoke/CurlyRpc.AotSmoke.csproj -c Release -f net10.0 -r linux-x64 /p:PublishAot=true
+      # PublishAot is set in the app project; a global property also applies to the netstandard source generator.
+      run: dotnet publish test/CurlyRpc.AotSmoke/CurlyRpc.AotSmoke.csproj -c Release -f net10.0 -r linux-x64
 
     - name: Run AOT smoke app
       run: ./test/CurlyRpc.AotSmoke/bin/Release/net10.0/linux-x64/publish/CurlyRpc.AotSmoke
