@@ -25,7 +25,8 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
     /// <summary>
     /// The maximum size, in bytes, of a single inbound frame body. When greater than zero, a frame
     /// that exceeds this limit faults the read loop with a <see cref="JsonRpcMessageTooLargeException"/>
-    /// before its body is fully buffered. <c>0</c> (the default) means no limit.
+    /// before it is returned. Incomplete frames are rejected as soon as the framing can establish
+    /// that the body exceeds the limit. <c>0</c> (the default) means no limit.
     /// </summary>
     public int MaximumMessageSize { get; set; }
 
@@ -87,6 +88,11 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
 
                 if (found)
                 {
+                    if (MaximumMessageSize > 0 && bodyLength > MaximumMessageSize)
+                    {
+                        throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+                    }
+
                     Span<byte> destination = RentFrameSpan(bodyLength);
                     new ReadOnlySpan<byte>(_buffer, _dataStart + bodyStart, bodyLength).CopyTo(destination);
                     Advance(consumed);
@@ -100,12 +106,9 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
                 }
             }
 
-            // Guard against an unbounded in-progress frame (a peer that streams a body without a
-            // terminator, or a framing without a declared length). Header framing additionally rejects
-            // an oversized declared Content-Length up front in TryReadFrame.
-            if (MaximumMessageSize > 0 && _dataLength > MaximumMessageSize)
+            if (MaximumMessageSize > 0)
             {
-                throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+                ValidateIncompleteFrameSize(new ReadOnlySpan<byte>(_buffer, _dataStart, _dataLength));
             }
 
             int read = await FillAsync(cancellationToken).ConfigureAwait(false);
@@ -133,6 +136,16 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
     /// <param name="bodyLength">On success, the length of the message body.</param>
     /// <returns><see langword="true"/> if a complete frame was parsed; otherwise <see langword="false"/>.</returns>
     protected abstract bool TryReadFrame(ReadOnlySpan<byte> available, out int consumed, out int bodyStart, out int bodyLength);
+
+    // Built-in framing formats exclude their own framing bytes. Retain the conservative buffered
+    // byte check for other subclasses that do not have framing-specific size accounting.
+    private protected virtual void ValidateIncompleteFrameSize(ReadOnlySpan<byte> available)
+    {
+        if (available.Length > MaximumMessageSize)
+        {
+            throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+        }
+    }
 
     /// <summary>
     /// Writes the framing and body of a single message to <see cref="SendStream"/>. Flushing is
