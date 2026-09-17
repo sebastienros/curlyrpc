@@ -21,6 +21,9 @@ public static class JsonRpcErrorCodes
     /// <summary>Internal JSON-RPC error.</summary>
     public const int InternalError = -32603;
 
+    /// <summary>The connection has reached its configured active enumeration limit.</summary>
+    public const int EnumerationLimitExceeded = -32001;
+
     /// <summary>The inclusive lower bound of the implementation-defined server error range.</summary>
     public const int ServerErrorRangeStart = -32099;
 

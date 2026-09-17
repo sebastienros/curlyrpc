@@ -11,6 +11,7 @@ namespace CurlyRpc;
 internal abstract class RpcEnumerableResult
 {
     private readonly SemaphoreSlim _readGate = new(1, 1);
+    private bool _disposed;
 
     /// <summary>
     /// Reads up to <paramref name="batchSize"/> elements, serialized with the connection options.
@@ -26,6 +27,7 @@ internal abstract class RpcEnumerableResult
         await _readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             return await ReadBatchCoreAsync(serializerOptions, batchSize, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -41,7 +43,24 @@ internal abstract class RpcEnumerableResult
         CancellationToken cancellationToken);
 
     /// <summary>Disposes the underlying enumerator.</summary>
-    public abstract ValueTask DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _readGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                await DisposeCoreAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _readGate.Release();
+        }
+    }
+
+    protected abstract ValueTask DisposeCoreAsync();
 
     /// <summary>Creates a typed result for <paramref name="elementType"/> from a runtime enumerable instance.</summary>
     [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Constructing a generic enumerable result requires runtime code generation.")]
@@ -86,7 +105,7 @@ internal sealed class RpcEnumerableResult<T> : RpcEnumerableResult
         return (values, finished);
     }
 
-    public override ValueTask DisposeAsync() => _enumerator.DisposeAsync();
+    protected override ValueTask DisposeCoreAsync() => _enumerator.DisposeAsync();
 
     private static JsonElement SerializeValue(T value, JsonSerializerOptions serializerOptions)
     {

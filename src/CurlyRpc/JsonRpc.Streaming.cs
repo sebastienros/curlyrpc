@@ -95,36 +95,85 @@ public sealed partial class JsonRpc
 
     private async Task SendEnumerableStartAsync(RequestId id, RpcEnumerableResult enumerable, List<byte[]>? batch)
     {
-        long token = Interlocked.Increment(ref _nextEnumeratorToken);
+        bool reserved;
+        lock (_gate)
+        {
+            reserved = !_disposed && _shutdownFlag == 0
+                && (_maximumActiveEnumerations == 0 || _activeEnumerations < _maximumActiveEnumerations);
+            if (reserved)
+            {
+                _activeEnumerations++;
+            }
+        }
 
-        List<JsonElement> values;
-        bool finished;
+        if (!reserved)
+        {
+            await DisposeEnumeratorAsync(enumerable).ConfigureAwait(false);
+            throw new LocalRpcException("The active enumeration limit was reached or the connection is closing.",
+                JsonRpcErrorCodes.EnumerationLimitExceeded);
+        }
+
+        long token = Interlocked.Increment(ref _nextEnumeratorToken);
+        bool registered = false;
         try
         {
-            (values, finished) = await enumerable
+            var (values, finished) = await enumerable
                 .ReadBatchAsync(_serializerOptions, EnumeratorBatchSize, _disposeCts.Token)
                 .ConfigureAwait(false);
+            RawJsonValue result = BuildEnumerableEnvelope(finished ? null : token, values, finished);
+
+            if (finished)
+            {
+                await DisposeReservedEnumeratorAsync(enumerable).ConfigureAwait(false);
+                reserved = false;
+            }
+            else
+            {
+                lock (_gate)
+                {
+                    if (_disposed || _shutdownFlag != 0)
+                    {
+                        throw new OperationCanceledException("The connection is closing.");
+                    }
+
+                    _enumerators[token] = enumerable;
+                    registered = true;
+                }
+            }
+
+            await SendResultElementAsync(id, result, batch).ConfigureAwait(false);
         }
         catch
         {
-            // The enumerator faulted before it was registered; dispose it so it cannot leak, then
-            // let the dispatch loop translate the failure into a JSON-RPC error response.
-            await enumerable.DisposeAsync().ConfigureAwait(false);
+            if (registered && _enumerators.TryRemove(token, out RpcEnumerableResult? failed))
+            {
+                await DisposeReservedEnumeratorAsync(failed).ConfigureAwait(false);
+            }
+
             throw;
         }
-
-        RawJsonValue result = BuildEnumerableEnvelope(finished ? null : token, values, finished);
-
-        if (finished)
+        finally
         {
-            await enumerable.DisposeAsync().ConfigureAwait(false);
+            if (!registered && reserved)
+            {
+                await DisposeReservedEnumeratorAsync(enumerable).ConfigureAwait(false);
+            }
         }
-        else
-        {
-            _enumerators[token] = enumerable;
-        }
+    }
 
-        await SendResultElementAsync(id, result, batch).ConfigureAwait(false);
+    private async Task DisposeReservedEnumeratorAsync(RpcEnumerableResult enumerable)
+    {
+        try
+        {
+            await DisposeEnumeratorAsync(enumerable).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _activeEnumerations--;
+            }
+        }
     }
 
     private async Task HandleEnumeratorNextAsync(RequestId id, JsonElement? @params, bool isNotification, List<byte[]>? batch)
@@ -155,7 +204,7 @@ public sealed partial class JsonRpc
             // the initial call (including exception detail scrubbing and deliberate RPC errors).
             if (_enumerators.TryRemove(token, out RpcEnumerableResult? failed))
             {
-                await failed.DisposeAsync().ConfigureAwait(false);
+                await DisposeReservedEnumeratorAsync(failed).ConfigureAwait(false);
             }
 
             throw;
@@ -163,7 +212,7 @@ public sealed partial class JsonRpc
 
         if (finished && _enumerators.TryRemove(token, out RpcEnumerableResult? completed))
         {
-            await completed.DisposeAsync().ConfigureAwait(false);
+            await DisposeReservedEnumeratorAsync(completed).ConfigureAwait(false);
         }
 
         RawJsonValue result = BuildEnumerableEnvelope(null, values, finished);
@@ -174,7 +223,7 @@ public sealed partial class JsonRpc
     {
         if (ReadToken(@params) is long token && _enumerators.TryRemove(token, out RpcEnumerableResult? enumerable))
         {
-            await enumerable.DisposeAsync().ConfigureAwait(false);
+            await DisposeReservedEnumeratorAsync(enumerable).ConfigureAwait(false);
         }
     }
 

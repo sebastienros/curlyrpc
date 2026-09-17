@@ -110,6 +110,19 @@ public sealed class JsonRpcOptions
     public int MaximumConcurrentRequests { get; set; }
 
     /// <summary>
+    /// Maximum server-side streaming enumerations, including starts reading their first batch and
+    /// enumerators being disposed. Zero (the default) means unlimited; negative values are invalid.
+    /// At capacity, a new streaming result is disposed without advancing it and the request fails
+    /// with <see cref="JsonRpcErrorCodes.EnumerationLimitExceeded"/>. Capacity is released after
+    /// completion, abort, failure, or connection shutdown disposes the enumerator.
+    /// </summary>
+    /// <remarks>
+    /// There is no idle expiry: abandoned streams retain their slots until abort or disconnect.
+    /// Choose a finite limit for untrusted peers. This limit is independent of request concurrency.
+    /// </remarks>
+    public int MaximumActiveEnumerations { get; set; }
+
+    /// <summary>
     /// Maximum admitted inbound requests, notifications and protocol-error replies, including queued
     /// dispatches and responses awaiting transport writes. Batch elements count individually and retain
     /// their reservations until the batch reply is written. Zero (the default) means unlimited.
@@ -180,6 +193,7 @@ public sealed class JsonRpcOptions
     ///   <item><description><see cref="MaximumInboundMessageSize"/> = 4 MiB
     ///   (<see cref="DefaultHardenedMaximumInboundMessageSize"/>).</description></item>
     ///   <item><description><see cref="MaximumConcurrentRequests"/> = <c>Environment.ProcessorCount * 16</c>.</description></item>
+    ///   <item><description><see cref="MaximumActiveEnumerations"/> = 128.</description></item>
     ///   <item><description><see cref="MaximumPendingInboundRequests"/> = <c>Environment.ProcessorCount * 64</c>.</description></item>
     ///   <item><description><see cref="MaximumPendingInboundBytes"/> = 16 MiB.</description></item>
     ///   <item><description><see cref="ExposeExceptionDetails"/> = <see langword="false"/>.</description></item>
@@ -202,6 +216,7 @@ public sealed class JsonRpcOptions
         SerializerOptions = serializerOptions,
         MaximumInboundMessageSize = DefaultHardenedMaximumInboundMessageSize,
         MaximumConcurrentRequests = Environment.ProcessorCount * 16,
+        MaximumActiveEnumerations = 128,
         MaximumPendingInboundRequests = Environment.ProcessorCount * 64,
         MaximumPendingInboundBytes = 16 * 1024 * 1024,
         ExposeExceptionDetails = false,
