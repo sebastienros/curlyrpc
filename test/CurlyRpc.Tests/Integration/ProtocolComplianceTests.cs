@@ -12,6 +12,75 @@ public sealed class ProtocolComplianceTests
         => new() { SerializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web) };
 
     [TestMethod]
+    [DataRow("9223372036854775808")]
+    [DataRow("-9223372036854775809")]
+    [DataRow("1e1000")]
+    [DataRow("1.25")]
+    [DataRow("1.0000000000000000000000000000000001")]
+    public async Task NumericId_PreservesNumberInSuccessErrorAndBatchResponses(string id)
+    {
+        var (server, peer) = CreateServer();
+        await using var lifetime = server;
+
+        foreach (bool batch in new[] { false, true })
+        {
+            foreach (string method in new[] { "echo", "missing" })
+            {
+                string request = $$$"""{"jsonrpc":"2.0","method":"{{{method}}}","params":[5],"id":{{{id}}}}""";
+                await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(batch ? "[" + request + "]" : request), CancellationToken.None);
+                using JsonDocument response = await ReadResponseAsync(peer);
+                JsonElement root = batch ? response.RootElement[0] : response.RootElement;
+                Assert.AreEqual(JsonValueKind.Number, root.GetProperty("id").ValueKind);
+                Assert.AreEqual(id, root.GetProperty("id").GetRawText());
+                Assert.IsTrue(root.TryGetProperty(method == "echo" ? "result" : "error", out _));
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("9223372036854775808", "9223372036854775808")]
+    [DataRow("1e1000", "1e1000")]
+    [DataRow("1.25", "1.25")]
+    [DataRow("9223372036854775808", "9223372036854775808.0")]
+    [DataRow("1e1000", "10e999")]
+    [DataRow("1.25", "125e-2")]
+    public async Task Cancellation_DistinguishesNumericAndStringIds(string id, string equivalentId)
+    {
+        var (server, peer) = CreateServer(startListening: false);
+        await using var lifetime = server;
+        var numericStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stringStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.AddLocalRpcMethod("block", async (int which, CancellationToken token) =>
+        {
+            (which == 0 ? numericStarted : stringStarted).TrySetResult();
+            await Task.Delay(Timeout.Infinite, token);
+            return which;
+        });
+        server.StartListening();
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(
+            $$$"""{"jsonrpc":"2.0","method":"block","params":[0],"id":{{{id}}}}"""), CancellationToken.None);
+        await numericStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(
+            $$$"""{"jsonrpc":"2.0","method":"block","params":[1],"id":"{{{id}}}"}"""), CancellationToken.None);
+        await stringStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(
+            $$$"""{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":{{{equivalentId}}}}}"""), CancellationToken.None);
+        using JsonDocument numericResponse = await ReadResponseAsync(peer);
+        Assert.AreEqual(JsonValueKind.Number, numericResponse.RootElement.GetProperty("id").ValueKind);
+        Assert.AreEqual(id, numericResponse.RootElement.GetProperty("id").GetRawText());
+        Assert.AreEqual(-32800, numericResponse.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(
+            $$$"""{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"{{{id}}}"}}"""), CancellationToken.None);
+        using JsonDocument stringResponse = await ReadResponseAsync(peer);
+        Assert.AreEqual(JsonValueKind.String, stringResponse.RootElement.GetProperty("id").ValueKind);
+        Assert.AreEqual(id, stringResponse.RootElement.GetProperty("id").GetString());
+        Assert.AreEqual(-32800, stringResponse.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [TestMethod]
     public async Task RequestWithExplicitNullId_ReceivesResponseWithNullId()
     {
         var pipe1 = new PipeStream();
@@ -311,7 +380,7 @@ public sealed class ProtocolComplianceTests
         }
     }
 
-    private static (JsonRpc Server, HeaderDelimitedMessageHandler ClientHandler) CreateServer()
+    private static (JsonRpc Server, HeaderDelimitedMessageHandler ClientHandler) CreateServer(bool startListening = true)
     {
         var pipe1 = new PipeStream();
         var pipe2 = new PipeStream();
@@ -320,7 +389,11 @@ public sealed class ProtocolComplianceTests
 
         var server = new JsonRpc(serverHandler, Options());
         server.AddLocalRpcMethod("echo", (int x) => x);
-        server.StartListening();
+        if (startListening)
+        {
+            server.StartListening();
+        }
+
         return (server, clientHandler);
     }
 

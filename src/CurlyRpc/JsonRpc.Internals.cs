@@ -873,9 +873,7 @@ public sealed partial class JsonRpc
         switch (idElement.ValueKind)
         {
             case JsonValueKind.Number:
-                return idElement.TryGetInt64(out long number)
-                    ? new RequestId(number)
-                    : new RequestId(idElement.GetRawText());
+                return RequestId.FromNumber(idElement);
 
             case JsonValueKind.String:
                 return new RequestId(idElement.GetString()!);
