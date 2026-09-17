@@ -85,6 +85,44 @@ public sealed class HeaderDelimitedMessageHandlerTests
     }
 
     [TestMethod]
+    [DataRow("nope")]
+    [DataRow("")]
+    [DataRow("2nope")]
+    [DataRow("-1")]
+    [DataRow("2147483648")]
+    public async Task InvalidContentLengthThrows(string value)
+    {
+        byte[] wire = Utf8($"Content-Length: {value}\r\n\r\n{{}}");
+        var handler = new HeaderDelimitedMessageHandler(Stream.Null, new MemoryStream(wire));
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await handler.ReadMessageAsync(CancellationToken.None));
+    }
+
+    [TestMethod]
+    [DataRow("2", "2")]
+    [DataRow("0", "2")]
+    [DataRow("2", "0")]
+    [DataRow("nope", "2")]
+    [DataRow("2", "nope")]
+    [DataRow("", "2")]
+    [DataRow("2", "")]
+    [DataRow("2nope", "2")]
+    [DataRow("2", "2nope")]
+    [DataRow("-1", "2")]
+    [DataRow("2", "-1")]
+    [DataRow("2147483648", "2")]
+    [DataRow("2", "2147483648")]
+    public async Task DuplicateContentLengthThrowsRegardlessOfValues(string first, string second)
+    {
+        byte[] wire = Utf8($"Content-Length: {first}\r\nX-Whatever: ignored\r\ncOnTeNt-LeNgTh: {second}\r\n\r\n{{}}");
+        var handler = new HeaderDelimitedMessageHandler(Stream.Null, new MemoryStream(wire));
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await handler.ReadMessageAsync(CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task HandlesLargeMessageRequiringBufferGrowth()
     {
         string payload = "{\"data\":\"" + new string('x', 100_000) + "\"}";
