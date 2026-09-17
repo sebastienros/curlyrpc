@@ -131,15 +131,18 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
             int lineEnd = headerBlock.IndexOf("\r\n"u8);
             ReadOnlySpan<byte> line = lineEnd >= 0 ? headerBlock[..lineEnd] : headerBlock;
 
-            if (TryParseHeaderLine(line, out int value))
+            if (TryGetContentLengthValue(line, out ReadOnlySpan<byte> value))
             {
-                if (contentLength >= 0)
+                if (contentLength >= 0
+                    || !Utf8Parser.TryParse(value, out int parsed, out int bytesConsumed)
+                    || bytesConsumed != value.Length
+                    || parsed < 0)
                 {
-                    contentLength = -1; // duplicate Content-Length header
+                    contentLength = -1; // duplicate or invalid Content-Length header
                     return false;
                 }
 
-                contentLength = value;
+                contentLength = parsed;
             }
 
             headerBlock = lineEnd >= 0 ? headerBlock[(lineEnd + 2)..] : default;
@@ -148,9 +151,9 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         return contentLength >= 0;
     }
 
-    private static bool TryParseHeaderLine(ReadOnlySpan<byte> line, out int contentLength)
+    private static bool TryGetContentLengthValue(ReadOnlySpan<byte> line, out ReadOnlySpan<byte> value)
     {
-        contentLength = -1;
+        value = default;
 
         int colon = line.IndexOf((byte)':');
         if (colon < 0)
@@ -164,10 +167,7 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
             return false;
         }
 
-        ReadOnlySpan<byte> value = line[(colon + 1)..].Trim((byte)' ');
-        return Utf8Parser.TryParse(value, out int parsed, out int bytesConsumed)
-            && bytesConsumed == value.Length
-            && parsed >= 0
-            && (contentLength = parsed) >= 0;
+        value = line[(colon + 1)..].Trim((byte)' ');
+        return true;
     }
 }
