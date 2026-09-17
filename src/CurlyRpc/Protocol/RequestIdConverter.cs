@@ -13,7 +13,15 @@ internal sealed class RequestIdConverter : JsonConverter<RequestId>
         switch (reader.TokenType)
         {
             case JsonTokenType.Number:
-                return new RequestId(reader.GetInt64());
+                if (reader.TryGetInt64(out long number))
+                {
+                    return new RequestId(number);
+                }
+
+                using (JsonDocument document = JsonDocument.ParseValue(ref reader))
+                {
+                    return RequestId.FromNumber(document.RootElement);
+                }
             case JsonTokenType.String:
                 return new RequestId(reader.GetString()!);
             case JsonTokenType.Null:
@@ -25,7 +33,11 @@ internal sealed class RequestIdConverter : JsonConverter<RequestId>
 
     public override void Write(Utf8JsonWriter writer, RequestId value, JsonSerializerOptions options)
     {
-        if (value.Number is { } number)
+        if (value.NumberJson is { } json)
+        {
+            writer.WriteRawValue(json);
+        }
+        else if (value.Number is { } number)
         {
             writer.WriteNumberValue(number);
         }
