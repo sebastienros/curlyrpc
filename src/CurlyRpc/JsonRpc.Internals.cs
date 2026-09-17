@@ -337,50 +337,55 @@ public sealed partial class JsonRpc
     }
 
     private Task DispatchBatchElementAsync(JsonElement message, List<byte[]> responses)
+        => DispatchMessageAsync(message, responses);
+
+    private Task DispatchMessageAsync(JsonElement message, List<byte[]>? responses = null)
     {
         if (message.ValueKind != JsonValueKind.Object)
         {
-            responses.Add(SerializeError(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.", null));
-            return Task.CompletedTask;
+            return SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.", batch: responses);
         }
 
-        bool hasMethod = message.TryGetProperty("method", out JsonElement methodElement)
-            && methodElement.ValueKind == JsonValueKind.String;
+        bool hasMethod = message.TryGetProperty("method", out JsonElement methodElement);
         bool hasId = message.TryGetProperty("id", out JsonElement idElement);
 
-        if (hasMethod)
+        // A method member identifies a request even when its value is invalid. Conversely, an id
+        // alone does not identify a response. Leave response-body validation to HandleResponse.
+        if (!hasMethod && (message.TryGetProperty("result", out _) || message.TryGetProperty("error", out _)))
         {
-            string method = methodElement.GetString()!;
-            JsonElement? @params = message.TryGetProperty("params", out JsonElement paramsElement)
-                ? paramsElement.Clone()
-                : null;
-
-            if (!hasId)
+            if (hasId)
             {
-                if (string.Equals(method, _cancellationMethodName, StringComparison.Ordinal))
-                {
-                    HandleCancellationNotification(@params);
-                    return Task.CompletedTask;
-                }
-
-                ReadInboundTraceContext(message, out string? ntp, out string? nts);
-                return DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true, responses, ntp, nts);
+                HandleResponse(message, idElement);
             }
 
-            ReadInboundTraceContext(message, out string? tp, out string? ts);
-            return DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false, responses, tp, ts);
-        }
-
-        if (hasId)
-        {
-            // A response object carried inside a batch is correlated to a pending call; it never
-            // contributes to the batch reply.
-            HandleResponse(message, idElement);
             return Task.CompletedTask;
         }
 
-        responses.Add(SerializeError(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.", null));
-        return Task.CompletedTask;
+        bool validId = !hasId || idElement.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null;
+        RequestId id = hasId && validId ? ReadRequestId(idElement) : RequestId.Null;
+        bool hasParams = message.TryGetProperty("params", out JsonElement paramsElement);
+        if (!message.TryGetProperty("jsonrpc", out JsonElement version)
+            || version.ValueKind != JsonValueKind.String || version.GetString() != "2.0"
+            || !hasMethod || methodElement.ValueKind != JsonValueKind.String
+            || !validId
+            || (hasParams && paramsElement.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)))
+        {
+            // Only a valid request without an id is a notification. Malformed envelopes must
+            // receive Invalid Request even when no id was supplied.
+            return SendErrorAsync(id, JsonRpcErrorCodes.InvalidRequest, "Invalid Request.", batch: responses);
+        }
+
+        string method = methodElement.GetString()!;
+        JsonElement? @params = hasParams ? paramsElement.Clone() : null;
+        if (!hasId && string.Equals(method, _cancellationMethodName, StringComparison.Ordinal))
+        {
+            HandleCancellationNotification(@params);
+            return Task.CompletedTask;
+        }
+
+        // An explicit null id still requires a response; only an absent id is a notification.
+        ReadInboundTraceContext(message, out string? traceParent, out string? traceState);
+        return DispatchRequestAsync(id, method, @params, isNotification: !hasId, responses, traceParent, traceState);
     }
 
     private static byte[] AssembleBatchArray(List<byte[]> responses)
@@ -410,47 +415,7 @@ public sealed partial class JsonRpc
     }
 
     private void HandleSingleMessage(JsonElement message)
-    {
-        bool hasMethod = message.TryGetProperty("method", out JsonElement methodElement)
-            && methodElement.ValueKind == JsonValueKind.String;
-        bool hasId = message.TryGetProperty("id", out JsonElement idElement);
-
-        if (hasMethod)
-        {
-            string method = methodElement.GetString()!;
-            JsonElement? @params = message.TryGetProperty("params", out JsonElement paramsElement)
-                ? paramsElement.Clone()
-                : null;
-
-            if (!hasId)
-            {
-                if (string.Equals(method, _cancellationMethodName, StringComparison.Ordinal))
-                {
-                    HandleCancellationNotification(@params);
-                    return;
-                }
-
-                ReadInboundTraceContext(message, out string? ntp, out string? nts);
-                _ = DispatchRequestAsync(RequestId.Null, method, @params, isNotification: true, traceParent: ntp, traceState: nts);
-            }
-            else
-            {
-                // A request with an explicit "id": null is still a request and must receive a
-                // response with "id": null; only the absence of the id member denotes a notification.
-                ReadInboundTraceContext(message, out string? tp, out string? ts);
-                _ = DispatchRequestAsync(ReadRequestId(idElement), method, @params, isNotification: false, traceParent: tp, traceState: ts);
-            }
-
-            return;
-        }
-
-        if (!hasId)
-        {
-            return;
-        }
-
-        HandleResponse(message, idElement);
-    }
+        => _ = DispatchMessageAsync(message);
 
     private void HandleResponse(JsonElement message, JsonElement idElement)
     {

@@ -197,7 +197,7 @@ public sealed class ProtocolComplianceTests
     }
 
     [TestMethod]
-    public async Task Response_WithNeitherResultNorError_CompletesWithDefault()
+    public async Task Object_WithOnlyId_IsInvalidRequestAndDoesNotCompletePendingCall()
     {
         var (client, peer) = CreateClient();
         await using var _ = client;
@@ -207,14 +207,19 @@ public sealed class ProtocolComplianceTests
         using JsonDocument request = await ReadResponseAsync(peer);
         int id = request.RootElement.GetProperty("id").GetInt32();
 
-        // A response object carrying neither "result" nor "error" must resolve to the default value
-        // rather than hang or throw.
+        // An id alone does not identify a response; this is an invalid request envelope.
         await peer.WriteMessageAsync(
             Encoding.UTF8.GetBytes($"{{\"jsonrpc\":\"2.0\",\"id\":{id}}}"),
             CancellationToken.None);
 
-        int result = await call.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.AreEqual(0, result);
+        using JsonDocument error = await ReadResponseAsync(peer);
+        Assert.AreEqual(JsonRpcErrorCodes.InvalidRequest, error.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.IsFalse(call.IsCompleted);
+
+        await peer.WriteMessageAsync(
+            Encoding.UTF8.GetBytes($"{{\"jsonrpc\":\"2.0\",\"result\":42,\"id\":{id}}}"),
+            CancellationToken.None);
+        Assert.AreEqual(42, await call.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [TestMethod]
