@@ -197,24 +197,57 @@ public sealed class ProtocolComplianceTests
     }
 
     [TestMethod]
-    public async Task Response_WithNeitherResultNorError_CompletesWithDefault()
+    [DataRow("")]
+    [DataRow(",\"result\":42,\"error\":{\"code\":-32603,\"message\":\"bad\"}")]
+    [DataRow(",\"error\":null")]
+    [DataRow(",\"error\":[]")]
+    [DataRow(",\"error\":\"bad\"")]
+    [DataRow(",\"error\":{}")]
+    [DataRow(",\"error\":{\"code\":\"invalid\",\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":null,\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":true,\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":{},\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":[],\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":1.5,\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":2147483648,\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"message\":\"bad\"}")]
+    [DataRow(",\"error\":{\"code\":-32603}")]
+    [DataRow(",\"error\":{\"code\":-32603,\"message\":null}")]
+    [DataRow(",\"error\":{\"code\":-32603,\"message\":42}")]
+    public async Task Response_Malformed_FaultsCallAndReadLoopSurvives(string members)
     {
-        var (client, peer) = CreateClient();
-        await using var _ = client;
+        foreach (bool batch in new[] { false, true })
+        {
+            var (client, peer) = CreateClient();
+            await using var _ = client;
 
-        Task<int> call = client.InvokeAsync<int>("compute", 1);
+            Task<int> call = client.InvokeAsync<int>("compute", 1);
+            using JsonDocument request = await ReadResponseAsync(peer);
+            int id = request.RootElement.GetProperty("id").GetInt32();
 
-        using JsonDocument request = await ReadResponseAsync(peer);
-        int id = request.RootElement.GetProperty("id").GetInt32();
+            Task<int> probe = client.InvokeAsync<int>("compute", 2);
+            using JsonDocument probeRequest = await ReadResponseAsync(peer);
+            int probeId = probeRequest.RootElement.GetProperty("id").GetInt32();
 
-        // A response object carrying neither "result" nor "error" must resolve to the default value
-        // rather than hang or throw.
-        await peer.WriteMessageAsync(
-            Encoding.UTF8.GetBytes($"{{\"jsonrpc\":\"2.0\",\"id\":{id}}}"),
-            CancellationToken.None);
+            string malformed = $"{{\"jsonrpc\":\"2.0\",\"id\":{id}{members}}}";
+            string valid = $"{{\"jsonrpc\":\"2.0\",\"id\":{probeId},\"result\":42}}";
+            await peer.WriteMessageAsync(
+                Encoding.UTF8.GetBytes(batch ? $"[{malformed},{valid}]" : malformed),
+                CancellationToken.None);
+            if (!batch)
+            {
+                await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(valid), CancellationToken.None);
+            }
 
-        int result = await call.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.AreEqual(0, result);
+            await Assert.ThrowsExactlyAsync<JsonRpcException>(
+                () => call.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsTrue(call.IsFaulted);
+            Assert.AreEqual(42, await probe.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.IsFalse(client.Completion.IsCompleted);
+
+            await client.DisposeAsync();
+            Assert.IsTrue(call.IsFaulted);
+        }
     }
 
     [TestMethod]
