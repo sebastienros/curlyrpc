@@ -59,7 +59,9 @@ public sealed class StreamingTests
     }
 
     [TestMethod]
-    public async Task InvokeAsyncEnumerable_EarlyBreak_AbortsEnumeration()
+    [DataRow(1)]
+    [DataRow(3)]
+    public async Task InvokeAsyncEnumerable_EarlyBreak_AbortsEnumeration(int breakAfter)
     {
         var (client, server) = CreatePair();
         await using var _c = client;
@@ -74,13 +76,33 @@ public sealed class StreamingTests
         await foreach (int value in client.InvokeAsyncEnumerable<int>("count"))
         {
             received.Add(value);
-            if (received.Count == 3)
+            if (received.Count == breakAfter)
             {
                 break;
             }
         }
 
-        Assert.AreEqual(3, received.Count);
+        Assert.AreEqual(breakAfter, received.Count);
+        await aborted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [TestMethod]
+    public async Task InvokeAsyncEnumerable_FirstBatchDeserializationFailure_AbortsEnumeration()
+    {
+        var (client, server) = CreatePair();
+        await using var _c = client;
+        await using var _s = server;
+
+        var aborted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.AddLocalRpcMethod("count", (CancellationToken ct) => RangeUntilAbort(aborted, ct));
+        server.StartListening();
+        client.StartListening();
+
+        await using IAsyncEnumerator<bool> enumerator =
+            client.InvokeAsyncEnumerable<bool>("count").GetAsyncEnumerator();
+
+        // The server yields an integer, which cannot be deserialized as a boolean.
+        await Assert.ThrowsExactlyAsync<JsonException>(async () => await enumerator.MoveNextAsync());
         await aborted.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 

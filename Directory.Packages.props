@@ -21,7 +21,7 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
 
     <!-- Source Link: embed repository/commit info so consumers can step into sources -->
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.300" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.303" />
 
     <!-- Tests: Microsoft Testing Platform v2 (MSTest runner) -->
     <PackageVersion Include="MSTest.TestAdapter" Version="4.2.3" />

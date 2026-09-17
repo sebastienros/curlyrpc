@@ -82,6 +82,21 @@ public sealed class NewlineDelimitedMessageHandler : StreamMessageHandler
         }
     }
 
+    private protected override void ValidateIncompleteFrameSize(ReadOnlySpan<byte> available)
+    {
+        // A trailing CR may be the first byte of a split CRLF separator, not part of the body.
+        int bodyLength = available.Length;
+        if (bodyLength > 0 && available[bodyLength - 1] == (byte)'\r')
+        {
+            bodyLength--;
+        }
+
+        if (bodyLength > MaximumMessageSize)
+        {
+            throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+        }
+    }
+
     /// <inheritdoc />
     protected override async ValueTask WriteFrameAsync(ReadOnlyMemory<byte> body)
     {

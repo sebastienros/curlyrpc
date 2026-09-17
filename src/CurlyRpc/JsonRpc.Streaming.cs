@@ -50,18 +50,18 @@ public sealed partial class JsonRpc
 
         bool finished = ReadFinished(start);
 
-        foreach (T value in EnumerateValues<T>(start))
-        {
-            yield return value;
-        }
-
-        if (finished || token is null)
-        {
-            yield break;
-        }
-
         try
         {
+            foreach (T value in EnumerateValues<T>(start))
+            {
+                yield return value;
+            }
+
+            if (finished || token is null)
+            {
+                yield break;
+            }
+
             while (!finished)
             {
                 JsonElement batch = await InvokeCoreAsync(
@@ -79,7 +79,7 @@ public sealed partial class JsonRpc
         }
         finally
         {
-            if (!finished)
+            if (!finished && token is not null)
             {
                 try
                 {
@@ -93,7 +93,7 @@ public sealed partial class JsonRpc
         }
     }
 
-    private async Task SendEnumerableStartAsync(RequestId id, RpcEnumerableResult enumerable)
+    private async Task SendEnumerableStartAsync(RequestId id, RpcEnumerableResult enumerable, List<byte[]>? batch)
     {
         long token = Interlocked.Increment(ref _nextEnumeratorToken);
 
@@ -124,10 +124,10 @@ public sealed partial class JsonRpc
             _enumerators[token] = enumerable;
         }
 
-        await SendResultElementAsync(id, result).ConfigureAwait(false);
+        await SendResultElementAsync(id, result, batch).ConfigureAwait(false);
     }
 
-    private async Task HandleEnumeratorNextAsync(RequestId id, JsonElement? @params, bool isNotification)
+    private async Task HandleEnumeratorNextAsync(RequestId id, JsonElement? @params, bool isNotification, List<byte[]>? batch)
     {
         if (isNotification)
         {
@@ -136,7 +136,7 @@ public sealed partial class JsonRpc
 
         if (ReadToken(@params) is not long token || !_enumerators.TryGetValue(token, out RpcEnumerableResult? enumerable))
         {
-            await SendErrorAsync(id, JsonRpcErrorCodes.InvalidParams, "Unknown or completed enumeration token.").ConfigureAwait(false);
+            await SendErrorAsync(id, JsonRpcErrorCodes.InvalidParams, "Unknown or completed enumeration token.", batch: batch).ConfigureAwait(false);
             return;
         }
 
@@ -167,7 +167,7 @@ public sealed partial class JsonRpc
         }
 
         RawJsonValue result = BuildEnumerableEnvelope(null, values, finished);
-        await SendResultElementAsync(id, result).ConfigureAwait(false);
+        await SendResultElementAsync(id, result, batch).ConfigureAwait(false);
     }
 
     private async Task HandleEnumeratorAbortAsync(JsonElement? @params)
@@ -178,11 +178,11 @@ public sealed partial class JsonRpc
         }
     }
 
-    private Task SendResultElementAsync(RequestId id, RawJsonValue result)
+    private Task SendResultElementAsync(RequestId id, RawJsonValue result, List<byte[]>? batch)
     {
         var wire = new JsonRpcResultWire { Id = id, Result = result };
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(wire, JsonRpcWireContext.Default.JsonRpcResultWire);
-        return _handler.WriteMessageAsync(bytes, CancellationToken.None).AsTask();
+        return EmitAsync(bytes, batch);
     }
 
     private IEnumerable<T> EnumerateValues<T>(JsonElement envelope)
