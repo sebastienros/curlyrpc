@@ -20,6 +20,8 @@ public sealed class SecurityTests
         var options = new JsonRpcOptions();
         Assert.AreEqual(0, options.MaximumInboundMessageSize);
         Assert.AreEqual(0, options.MaximumConcurrentRequests);
+        Assert.AreEqual(0, options.MaximumPendingInboundRequests);
+        Assert.AreEqual(0L, options.MaximumPendingInboundBytes);
         Assert.IsTrue(options.ExposeExceptionDetails);
         Assert.AreEqual(TimeSpan.Zero, options.KeepAliveInterval);
     }
@@ -34,6 +36,8 @@ public sealed class SecurityTests
         Assert.AreEqual(JsonRpcOptions.DefaultHardenedMaximumInboundMessageSize, options.MaximumInboundMessageSize);
         Assert.AreEqual(4 * 1024 * 1024, options.MaximumInboundMessageSize);
         Assert.AreEqual(Environment.ProcessorCount * 16, options.MaximumConcurrentRequests);
+        Assert.AreEqual(Environment.ProcessorCount * 64, options.MaximumPendingInboundRequests);
+        Assert.AreEqual(16L * 1024 * 1024, options.MaximumPendingInboundBytes);
         Assert.IsFalse(options.ExposeExceptionDetails);
     }
 
