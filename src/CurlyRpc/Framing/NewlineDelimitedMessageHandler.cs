@@ -9,6 +9,10 @@ public sealed class NewlineDelimitedMessageHandler : StreamMessageHandler
 {
     private static readonly byte[] Newline = [(byte)'\n'];
 
+    // Bytes at the front of the buffered data already known to hold no newline (the partial line
+    // left by the previous call), so each read only scans newly received bytes.
+    private int _scanned;
+
     /// <summary>
     /// Initializes a new <see cref="NewlineDelimitedMessageHandler"/> over a single duplex stream.
     /// </summary>
@@ -48,15 +52,22 @@ public sealed class NewlineDelimitedMessageHandler : StreamMessageHandler
         bodyLength = 0;
 
         int offset = 0;
+        int searchFrom = _scanned;
+        _scanned = 0;
         while (true)
         {
-            int newline = available[offset..].IndexOf((byte)'\n');
+            int newline = available[(offset + searchFrom)..].IndexOf((byte)'\n');
             if (newline < 0)
             {
-                // No complete line remains. Keep skipping the blank lines already consumed.
+                // No complete line remains. Keep skipping the blank lines already consumed, and
+                // remember how much of the partial line has been scanned.
                 consumed = offset;
+                _scanned = available.Length - offset;
                 return false;
             }
+
+            newline += searchFrom;
+            searchFrom = 0;
 
             int lineStart = offset;
             int lineLength = newline;

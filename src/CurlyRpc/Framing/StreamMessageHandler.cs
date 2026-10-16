@@ -14,12 +14,23 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
     private readonly Stream _sendStream;
     private readonly Stream _receiveStream;
     private readonly bool _ownsStreams;
+    // The write lock is never disposed: disposing it while a writer holds it or others wait on it
+    // would strand the waiters and make the holder's Release throw. Waiters instead observe
+    // _disposeCts, which disposal cancels. SemaphoreSlim only needs disposal if its wait handle is used.
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly CancellationTokenSource _disposeCts = new();
 
-    private byte[] _buffer = new byte[1024];
+    private const int InitialBufferSize = 1024;
+    private const int InitialFrameBufferSize = 256;
+
+    // Buffers that grew past this size for one large frame are released once that frame is done,
+    // so a single large message does not pin its peak memory for the lifetime of the connection.
+    private const int RetainedBufferSizeLimit = 1024 * 1024;
+
+    private byte[] _buffer = new byte[InitialBufferSize];
     private int _dataStart;
     private int _dataLength;
-    private byte[] _frameBuffer = new byte[256];
+    private byte[] _frameBuffer = new byte[InitialFrameBufferSize];
     private bool _disposed;
 
     /// <summary>
@@ -59,9 +70,10 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
         // Cancellation only applies while waiting for the lock. Once we hold it and start emitting a
         // frame we must finish it; cancelling mid-frame would leave the peer waiting for bytes that
         // never arrive and desynchronize every subsequent message on this connection.
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await AcquireWriteLockAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             await WriteFrameAsync(messageJsonUtf8).ConfigureAwait(false);
             await _sendStream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         }
@@ -71,10 +83,50 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
         }
     }
 
+    private async ValueTask AcquireWriteLockAsync(CancellationToken cancellationToken)
+    {
+        CancellationToken disposeToken = _disposeCts.Token;
+
+        if (!cancellationToken.CanBeCanceled)
+        {
+            try
+            {
+                await _writeLock.WaitAsync(disposeToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (disposeToken.IsCancellationRequested)
+            {
+                throw new ObjectDisposedException(GetType().FullName);
+            }
+
+            return;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, disposeToken);
+        try
+        {
+            await _writeLock.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && disposeToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(GetType().FullName);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Surface the caller's token rather than the linked one.
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
     /// <inheritdoc />
     public async ValueTask<ReadOnlyMemory<byte>?> ReadMessageAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The previously returned frame is no longer valid; drop an outsized frame buffer.
+        if (_frameBuffer.Length > RetainedBufferSizeLimit)
+        {
+            _frameBuffer = new byte[InitialFrameBufferSize];
+        }
 
         while (true)
         {
@@ -174,6 +226,10 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
         if (_dataLength == 0)
         {
             _dataStart = 0;
+            if (_buffer.Length > RetainedBufferSizeLimit)
+            {
+                _buffer = new byte[InitialBufferSize];
+            }
         }
     }
 
@@ -215,6 +271,10 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
         GC.SuppressFinalize(this);
     }
 
+    // Wakes queued writers with ObjectDisposedException. The CTS is not disposed either, so a
+    // concurrent writer racing disposal can still link to its (already cancelled) token.
+    private void CancelPendingWrites() => _disposeCts.Cancel();
+
     /// <summary>Releases resources held by the handler.</summary>
     protected virtual void Dispose(bool disposing)
     {
@@ -227,7 +287,7 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
 
         if (disposing)
         {
-            _writeLock.Dispose();
+            CancelPendingWrites();
             if (_ownsStreams)
             {
                 _sendStream.Dispose();
@@ -245,7 +305,7 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
         }
 
         _disposed = true;
-        _writeLock.Dispose();
+        CancelPendingWrites();
 
         if (_ownsStreams)
         {

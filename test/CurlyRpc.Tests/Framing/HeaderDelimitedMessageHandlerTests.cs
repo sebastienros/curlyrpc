@@ -179,6 +179,82 @@ public sealed class HeaderDelimitedMessageHandlerTests
         }
     }
 
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(7)]
+    [DataRow(4096)]
+    [DataRow(1_000_000)]
+    public async Task UnterminatedHeader_ThrowsWithoutSizeLimit(int chunkSize)
+    {
+        // Without a header cap a peer could grow the read buffer forever by never sending \r\n\r\n.
+        byte[] wire = Utf8("Content-Length: 2\r\nX: " + new string('a', 1_000_000));
+        var input = new ChunkedReadStream(wire, chunkSize);
+        var handler = new HeaderDelimitedMessageHandler(Stream.Null, input);
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await handler.ReadMessageAsync(CancellationToken.None));
+        Assert.IsTrue(input.Position <= HeaderDelimitedMessageHandler.DefaultMaximumHeaderSize * 2 + chunkSize,
+            $"Read {input.Position} bytes before rejecting the header.");
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(4096)]
+    [DataRow(1_000_000)]
+    public async Task ManyPaddingHeaderLines_Throw(int chunkSize)
+    {
+        var header = new StringBuilder();
+        for (int i = 0; i < 5_000; i++)
+        {
+            header.Append("X-Pad: 1\r\n");
+        }
+
+        byte[] wire = Utf8(header + "Content-Length: 2\r\n\r\n{}");
+        var handler = new HeaderDelimitedMessageHandler(Stream.Null, new ChunkedReadStream(wire, chunkSize));
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            async () => await handler.ReadMessageAsync(CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task HeaderAtExactLimit_IsAccepted()
+    {
+        const string suffix = "Content-Length: 2\r\n\r\n";
+        const int limit = 64;
+        string padding = "X: " + new string('a', limit - suffix.Length - "X: \r\n".Length) + "\r\n";
+        Assert.AreEqual(limit, padding.Length + suffix.Length);
+        for (int extra = 0; extra <= 1; extra++)
+        {
+            byte[] wire = Utf8((extra == 0 ? padding : "a" + padding) + suffix + "{}");
+            for (int chunkSize = 1; chunkSize <= wire.Length; chunkSize++)
+            {
+                var handler = new HeaderDelimitedMessageHandler(Stream.Null, new ChunkedReadStream(wire, chunkSize)) { MaximumHeaderSize = limit };
+                if (extra == 0)
+                {
+                    Assert.AreEqual("{}", await ReadStringAsync(handler), $"Chunk size: {chunkSize}");
+                }
+                else
+                {
+                    await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                        async () => await handler.ReadMessageAsync(CancellationToken.None), $"Chunk size: {chunkSize}");
+                }
+            }
+        }
+    }
+
+    [TestMethod]
+    public async Task LargeFrame_ThenSmallFrames_ReadCorrectly()
+    {
+        string large = "\"" + new string('x', 3_000_000) + "\"";
+        byte[] wire = await FrameAsync(large, "[1]", "[2]");
+        var handler = new HeaderDelimitedMessageHandler(Stream.Null, new ChunkedReadStream(wire, 65536));
+
+        Assert.AreEqual(large, await ReadStringAsync(handler));
+        Assert.AreEqual("[1]", await ReadStringAsync(handler));
+        Assert.AreEqual("[2]", await ReadStringAsync(handler));
+        Assert.IsNull(await handler.ReadMessageAsync(CancellationToken.None));
+    }
+
     private static async Task<byte[]> FrameAsync(params string[] messages)
     {
         using var output = new MemoryStream();

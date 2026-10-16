@@ -14,6 +14,20 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
     // static byte[] allocation a field initializer would incur. Only ever compared via Ascii.EqualsIgnoreCase.
     private static ReadOnlySpan<byte> ContentLengthName => "content-length"u8;
 
+    /// <summary>The default value of <see cref="MaximumHeaderSize"/>: 8 KiB.</summary>
+    public const int DefaultMaximumHeaderSize = 8 * 1024;
+
+    private int _maximumHeaderSize = DefaultMaximumHeaderSize;
+
+    // Bytes of the pending header section already searched for the terminator, so each read only
+    // scans new bytes. Reset whenever a frame is consumed.
+    private int _headerScanned;
+
+    // Once the header section of the pending frame is parsed, its end offset and declared length,
+    // so a body arriving over many reads does not re-parse the headers; -1 while headers are incomplete.
+    private int _pendingHeaderEnd = -1;
+    private int _pendingContentLength;
+
     /// <summary>
     /// Initializes a new <see cref="HeaderDelimitedMessageHandler"/> over a single duplex stream.
     /// </summary>
@@ -45,6 +59,23 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         MaximumMessageSize = maximumMessageSize;
     }
 
+    /// <summary>
+    /// The maximum size, in bytes, of a frame's header section, including the terminating blank line.
+    /// A peer that sends more header bytes faults the read loop with an <see cref="InvalidDataException"/>.
+    /// Unlike <see cref="StreamMessageHandler.MaximumMessageSize"/>, this limit always applies, so an
+    /// unterminated header block can never grow the read buffer without bound.
+    /// Defaults to <see cref="DefaultMaximumHeaderSize"/>.
+    /// </summary>
+    public int MaximumHeaderSize
+    {
+        get => _maximumHeaderSize;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 32); // room for our own Content-Length header
+            _maximumHeaderSize = value;
+        }
+    }
+
     /// <inheritdoc />
     protected override bool TryReadFrame(ReadOnlySpan<byte> available, out int consumed, out int bodyStart, out int bodyLength)
     {
@@ -52,23 +83,46 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         bodyStart = 0;
         bodyLength = 0;
 
-        int terminator = available.IndexOf("\r\n\r\n"u8);
-        if (terminator < 0)
+        int headerEnd = _pendingHeaderEnd;
+        int contentLength = _pendingContentLength;
+        if (headerEnd < 0)
         {
-            return false; // headers not fully received yet
-        }
+            // Resume where the last search stopped, backing up 3 bytes in case the terminator
+            // straddles the previous read boundary.
+            int searchStart = Math.Max(0, _headerScanned - 3);
+            int found = available[searchStart..].IndexOf("\r\n\r\n"u8);
+            if (found < 0)
+            {
+                if (available.Length > MaximumHeaderSize)
+                {
+                    throw HeaderTooLarge();
+                }
 
-        int headerEnd = terminator + 4;
-        if (!TryParseContentLength(available[..terminator], out int contentLength))
-        {
-            throw new InvalidDataException("JSON-RPC frame has a missing, duplicate, or invalid Content-Length header.");
-        }
+                _headerScanned = available.Length;
+                return false; // headers not fully received yet
+            }
 
-        // Reject an oversized declared length immediately, before buffering the body, so a peer cannot
-        // force a large allocation with a tiny header.
-        if (MaximumMessageSize > 0 && contentLength > MaximumMessageSize)
-        {
-            throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+            int terminator = searchStart + found;
+            headerEnd = terminator + 4;
+            if (headerEnd > MaximumHeaderSize)
+            {
+                throw HeaderTooLarge();
+            }
+
+            if (!TryParseContentLength(available[..terminator], out contentLength))
+            {
+                throw new InvalidDataException("JSON-RPC frame has a missing, duplicate, or invalid Content-Length header.");
+            }
+
+            // Reject an oversized declared length immediately, before buffering the body, so a peer cannot
+            // force a large allocation with a tiny header.
+            if (MaximumMessageSize > 0 && contentLength > MaximumMessageSize)
+            {
+                throw new JsonRpcMessageTooLargeException(MaximumMessageSize);
+            }
+
+            _pendingHeaderEnd = headerEnd;
+            _pendingContentLength = contentLength;
         }
 
         if (available.Length - headerEnd < contentLength)
@@ -79,8 +133,13 @@ public sealed class HeaderDelimitedMessageHandler : StreamMessageHandler
         bodyStart = headerEnd;
         bodyLength = contentLength;
         consumed = headerEnd + contentLength;
+        _headerScanned = 0;
+        _pendingHeaderEnd = -1;
         return true;
     }
+
+    private InvalidDataException HeaderTooLarge()
+        => new($"JSON-RPC frame header section exceeded the maximum allowed size of {MaximumHeaderSize} bytes.");
 
     private protected override void ValidateIncompleteFrameSize(ReadOnlySpan<byte> available)
     {
