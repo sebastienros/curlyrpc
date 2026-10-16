@@ -623,6 +623,10 @@ A runnable end-to-end sample (TCP loopback, authentication, a generated proxy, a
 dotnet run --project samples/CurlyRpc.Sample
 ```
 
+## Reporting security issues
+
+Please report vulnerabilities privately, not in public issues. See [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT
