@@ -494,7 +494,8 @@ await using var server = new JsonRpc(stream, options);
 ```
 
 `CreateHardened()` sets `MaximumInboundMessageSize = 4 MiB`, `MaximumConcurrentRequests =
-ProcessorCount × 16`, `MaximumActiveEnumerations = 128`, and `ExposeExceptionDetails = false`. Keep-alive
+ProcessorCount × 16`, `MaximumActiveEnumerations = 128`, `MaximumPendingInboundRequests = ProcessorCount × 64`,
+`MaximumPendingInboundBytes = 16 MiB`, and `ExposeExceptionDetails = false`. Keep-alive
 is left disabled because the right interval is transport-specific — set `KeepAliveInterval` yourself if
 the transport can silently half-open.
 
@@ -522,6 +523,8 @@ exception reconstruction. Deeply nested JSON is bounded by
 | --- | --- | --- |
 | Memory exhaustion from a huge declared/streamed frame | Oversized frames are rejected before the body is buffered, faulting the connection with `JsonRpcMessageTooLargeException` | `MaximumInboundMessageSize` (`0` = unlimited) |
 | Handler/thread-pool exhaustion from a request flood | Concurrent inbound dispatch is capped; excess calls queue | `MaximumConcurrentRequests` (`0` = unlimited) |
+| Unbounded queuing of admitted inbound work (including a peer that never reads replies) | Admitted requests, notifications, and pending replies are counted (batch elements individually) along with their retained frame bytes; exceeding either budget closes the connection | `MaximumPendingInboundRequests` / `MaximumPendingInboundBytes` (`0` = unlimited) |
+| Too many open server-side streams | New streaming results are rejected with `-32001` at capacity | `MaximumActiveEnumerations` (`0` = unlimited) |
 | A silently dropped/half-open transport leaving calls hung forever | Periodic `$/ping`; the connection faults with `ConnectionLostException` if the peer does not answer in time | `KeepAliveInterval` / `KeepAliveTimeout` (disabled) |
 
 Set a finite `MaximumInboundMessageSize` (and usually `MaximumConcurrentRequests`) for any connection
@@ -610,6 +613,9 @@ carry trace context.
 | `PropagateTraceContext` | `false` | When `true`, injects/honors W3C `traceparent`/`tracestate` on requests and notifications so server spans link to the caller's trace. Enable on both peers. |
 | `MaximumInboundMessageSize` | `0` (unlimited) | Maximum size in bytes of an inbound frame; larger frames fault the connection with `JsonRpcMessageTooLargeException`. |
 | `MaximumConcurrentRequests` | `0` (unlimited) | Maximum number of inbound handlers dispatched concurrently; excess requests queue. |
+| `MaximumActiveEnumerations` | `0` (unlimited) | Maximum concurrent server-side streaming enumerations; new streams beyond it fail with `-32001`. |
+| `MaximumPendingInboundRequests` | `0` (unlimited) | Maximum admitted inbound requests, notifications, and protocol-error replies (queued or awaiting a transport write). Exceeding it closes the connection. Responses and cancellation notifications are exempt. |
+| `MaximumPendingInboundBytes` | `0` (unlimited) | Maximum total inbound frame bytes retained by admitted work; a batch holds its whole frame until its reply is written. Exceeding it closes the connection. |
 | `ExposeExceptionDetails` | `true` | When `false`, unhandled handler exceptions return a generic message instead of `Exception.Message`. |
 | `KeepAliveInterval` | `TimeSpan.Zero` (disabled) | Interval between automatic `$/ping` liveness probes. |
 | `KeepAliveTimeout` | `KeepAliveInterval` | How long to wait for a ping response before faulting with `ConnectionLostException`. |
