@@ -133,13 +133,14 @@ rpc.AddLocalRpcTarget(new Calculator());
 ```
 
 `AddLocalRpcTarget` accepts `JsonRpcTargetOptions` to transform method names (for example, to
-camelCase) or to stop walking base types:
+camelCase) or to also expose methods inherited from base types (off by default, see
+[Limiting the exposed surface](#limiting-the-exposed-surface)):
 
 ```csharp
 rpc.AddLocalRpcTarget(new Calculator(), new JsonRpcTargetOptions
 {
     MethodNameTransform = name => char.ToLowerInvariant(name[0]) + name[1..],
-    IncludeInheritedMethods = false,
+    IncludeInheritedMethods = true,
 });
 ```
 
@@ -555,6 +556,38 @@ sent verbatim.
 `AddLocalRpcTarget` makes **every** eligible public method of the target remotely callable. Register a
 narrow facade rather than a broad domain object, and apply `[JsonRpcIgnore]` to anything that must not be
 reachable. Combine with `InboundMiddleware` for authentication.
+
+A public instance method is **eligible** unless it is:
+
+- declared on `object`, or an override of one (`ToString`, `Equals`, `GetHashCode`, `GetType`) — a
+  record's `ToString` prints every property, secrets included;
+- compiler generated, including record members such as `<Clone>$`, `Deconstruct`, `PrintMembers` and
+  `Equals(T)`;
+- an implementation of `IDisposable.Dispose`, `IAsyncDisposable.DisposeAsync` or `IEquatable<T>.Equals`;
+- inherited from a base type (or an override of a base type's virtual method), unless
+  `IncludeInheritedMethods = true`;
+- generic, a property/event accessor, or an operator;
+- `async void` — an exception thrown from one cannot be reported to the caller and terminates the
+  process, so return `Task` instead;
+- taking `ref`/`out`/`in`, pointer or ref struct (`Span<T>`) parameters, which cannot be bound from JSON.
+
+Registration fails fast with `ArgumentException` instead of silently overwriting:
+
+- when two methods map to the same JSON-RPC name — typically **overloads**; give each a distinct name with
+  `[JsonRpcMethod("...")]` or hide one with `[JsonRpcIgnore]`;
+- when a name is already registered on the connection (by `AddLocalRpcMethod` or another target);
+- when `[JsonRpcMethod]` is applied to an `async void` or by-ref method;
+- when `AddLocalRpcMethod(string, Delegate)` is given an `async void` or by-ref delegate.
+
+A target that is rejected registers none of its methods.
+
+> **Behavior change.** Earlier versions exposed overrides of `object` members, record-synthesized members,
+> `Dispose`/`DisposeAsync`, `async void` and by-ref methods, published every public method inherited from
+> base classes (including framework types such as `Collection<T>` or `BackgroundService`), and let a later
+> registration silently replace an earlier one with the same name. `IncludeInheritedMethods` now defaults
+> to `false`: a deny-by-default rule is the only one that does not depend on guessing which base classes are
+> "framework" (library base types from NuGet carry public methods too). If your target relies on methods
+> declared on a base class, set `IncludeInheritedMethods = true`, or redeclare them on a facade.
 
 ## Observability
 

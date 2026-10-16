@@ -22,7 +22,8 @@ public sealed partial class JsonRpc
     {
         ArgumentException.ThrowIfNullOrEmpty(rpcMethodName);
         EnsureNotListening();
-        _methods[rpcMethodName] = new DelegateRpcMethod(rpcMethodName, parameterTypes, invoke);
+        EnsureMethodNameAvailable(rpcMethodName);
+        _methods.Add(rpcMethodName, new DelegateRpcMethod(rpcMethodName, parameterTypes, invoke));
     }
 
     private static readonly Type?[] NoParameters = Array.Empty<Type?>();
