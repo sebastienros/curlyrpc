@@ -12,6 +12,8 @@
 
   <!-- Repository / package metadata -->
   <PropertyGroup>
+    <!-- Next release version. CI preview builds append -preview-<run>; tagged releases override Version. -->
+    <VersionPrefix>0.9.9</VersionPrefix>
     <Product>CurlyRpc</Product>
     <Authors>CurlyRpc contributors</Authors>
     <Company>CurlyRpc</Company>
