@@ -421,7 +421,9 @@ Both handlers accept either a single duplex stream or separate send/receive stre
 
 The built-in `HandshakeAuthenticationMiddleware` implements the token handshake used by hosts such as
 `microsoft/aspire`: a peer must call `authenticate(token)` before any other method. The token is
-compared in constant time; `ping` is allowed pre-auth; a wrong token closes the connection.
+compared in constant time; `ping` is allowed pre-auth; a wrong token closes the connection. A failed
+handshake is permanent: requests already queued behind it — including later elements of the same batch,
+even one carrying the correct token — are rejected or dropped, and no handler runs after the close.
 
 Create a new middleware instance for each connection. Its first inbound request or notification
 (including `ping`) permanently binds it to that connection. Sharing the middleware, including by
@@ -494,8 +496,9 @@ await using var server = new JsonRpc(stream, options);
 ```
 
 `CreateHardened()` sets `MaximumInboundMessageSize = 4 MiB`, `MaximumConcurrentRequests =
-ProcessorCount × 16`, `MaximumActiveEnumerations = 128`, `MaximumPendingInboundRequests = ProcessorCount × 64`,
-`MaximumPendingInboundBytes = 16 MiB`, and `ExposeExceptionDetails = false`. Keep-alive
+ProcessorCount × 16`, `MaximumActiveEnumerations = 128`, `MaximumBatchSize = 1000`,
+`MaximumPendingInboundRequests = ProcessorCount × 64`, `MaximumPendingInboundBytes = 16 MiB`, and
+`ExposeExceptionDetails = false`. Keep-alive
 is left disabled because the right interval is transport-specific — set `KeepAliveInterval` yourself if
 the transport can silently half-open.
 
@@ -525,6 +528,7 @@ exception reconstruction. Deeply nested JSON is bounded by
 | Handler/thread-pool exhaustion from a request flood | Concurrent inbound dispatch is capped; excess calls queue | `MaximumConcurrentRequests` (`0` = unlimited) |
 | Unbounded queuing of admitted inbound work (including a peer that never reads replies) | Admitted requests, notifications, and pending replies are counted (batch elements individually) along with their retained frame bytes; exceeding either budget closes the connection | `MaximumPendingInboundRequests` / `MaximumPendingInboundBytes` (`0` = unlimited) |
 | Too many open server-side streams | New streaming results are rejected with `-32001` at capacity | `MaximumActiveEnumerations` (`0` = unlimited) |
+| A single huge batch monopolizing dispatch | Batches with more elements are rejected whole with one `Invalid Request` error, before any element runs | `MaximumBatchSize` (`0` = unlimited) |
 | A silently dropped/half-open transport leaving calls hung forever | Periodic `$/ping`; the connection faults with `ConnectionLostException` if the peer does not answer in time | `KeepAliveInterval` / `KeepAliveTimeout` (disabled) |
 
 Set a finite `MaximumInboundMessageSize` (and usually `MaximumConcurrentRequests`) for any connection
@@ -565,7 +569,9 @@ The core emits a `System.Diagnostics.ActivitySource` and `Meter` named `CurlyRpc
 (`JsonRpcDiagnostics.SourceName`) with OpenTelemetry-style attributes (`rpc.system`, `rpc.method`,
 `rpc.jsonrpc.request_id`) and metrics (`rpc.client.duration`, `rpc.server.duration`,
 `rpc.client.in_flight`, `rpc.server.in_flight`). Wire it into OpenTelemetry by subscribing to that
-source/meter — no dependency required:
+source/meter — no dependency required. Inbound calls to an unregistered method are recorded as
+`_OTHER` (`JsonRpcDiagnostics.OtherMethodName`) so a peer cannot create unbounded span names or metric
+series, and the server-side `rpc.jsonrpc.request_id` tag is truncated to 128 characters.
 
 ```csharp
 using var tracer = Sdk.CreateTracerProviderBuilder()
@@ -580,6 +586,9 @@ using CurlyRpc.Extensions.Logging;
 
 using var bridge = JsonRpcLoggingBridge.Create(loggerFactory);
 ```
+
+Failed calls are logged at `Error`, except inbound method-not-found (`-32601`), which is logged at
+`Warning` so a peer probing for methods cannot flood error logs.
 
 ### Cross-process trace correlation
 
@@ -616,6 +625,7 @@ carry trace context.
 | `MaximumActiveEnumerations` | `0` (unlimited) | Maximum concurrent server-side streaming enumerations; new streams beyond it fail with `-32001`. |
 | `MaximumPendingInboundRequests` | `0` (unlimited) | Maximum admitted inbound requests, notifications, and protocol-error replies (queued or awaiting a transport write). Exceeding it closes the connection. Responses and cancellation notifications are exempt. |
 | `MaximumPendingInboundBytes` | `0` (unlimited) | Maximum total inbound frame bytes retained by admitted work; a batch holds its whole frame until its reply is written. Exceeding it closes the connection. |
+| `MaximumBatchSize` | `0` (unlimited) | Maximum number of elements in an inbound batch; larger batches are rejected with a single `Invalid Request` error. |
 | `ExposeExceptionDetails` | `true` | When `false`, unhandled handler exceptions return a generic message instead of `Exception.Message`. |
 | `KeepAliveInterval` | `TimeSpan.Zero` (disabled) | Interval between automatic `$/ping` liveness probes. |
 | `KeepAliveTimeout` | `KeepAliveInterval` | How long to wait for a ping response before faulting with `ConnectionLostException`. |

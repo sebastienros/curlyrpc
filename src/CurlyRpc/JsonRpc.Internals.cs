@@ -5,6 +5,9 @@ namespace CurlyRpc;
 
 public sealed partial class JsonRpc
 {
+    /// <summary>Set once a middleware decision asked to close the connection, before its reply is written.</summary>
+    private int _dispatchClosed;
+
     private sealed class PendingCall
     {
         public PendingCall(TaskCompletionSource<JsonElement> completion, string method)
@@ -23,6 +26,7 @@ public sealed partial class JsonRpc
     private async Task<JsonElement> InvokeCoreAsync(string method, RawJsonValue? @params, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 
         long id = Interlocked.Increment(ref _nextId);
         using System.Diagnostics.Activity? activity = JsonRpcDiagnostics.StartClientActivity(method, id);
@@ -51,6 +55,17 @@ public sealed partial class JsonRpc
 
         try
         {
+            // Shutdown sets its flag before failing every pending call. Re-check after publishing
+            // this call so one racing with (or following) connection loss cannot wait forever.
+            if (Interlocked.CompareExchange(ref _shutdownFlag, 0, 0) != 0)
+            {
+                _pending.TryRemove(id, out _);
+                registration.Dispose();
+                completion.TrySetException(new ConnectionLostException(
+                    "The JSON-RPC connection was lost before the request was sent."));
+                return await completion.Task.ConfigureAwait(false);
+            }
+
             try
             {
                 var wire = new JsonRpcRequestWire { Id = new RequestId(id), Method = method, Params = @params };
@@ -184,20 +199,25 @@ public sealed partial class JsonRpc
             {
                 await Task.Delay(_keepAliveInterval, cancellationToken).ConfigureAwait(false);
 
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(_keepAliveTimeout);
+                using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+                // Race the whole ping, including the write, against the timeout: a transport whose
+                // write never completes (and ignores cancellation) is exactly what keep-alive detects.
+                Task ping = Task.Run(() => InvokeCoreAsync(KeepAlivePingMethodName, null, pingCts.Token), CancellationToken.None);
                 try
                 {
-                    await InvokeCoreAsync(KeepAlivePingMethodName, null, timeoutCts.Token).ConfigureAwait(false);
+                    await ping.WaitAsync(_keepAliveTimeout, cancellationToken).ConfigureAwait(false);
                 }
-                catch (RemoteInvocationException)
+                catch (JsonRpcException ex) when (ex is not ConnectionLostException)
                 {
-                    // Any response — including an error such as "method not found" — proves the peer is
-                    // alive and processing messages, so the remote end need not implement $/ping.
+                    // Any reply, including an error such as "method not found" or even a malformed
+                    // error object, proves the peer is alive, so the remote end need not implement $/ping.
                 }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                catch (TimeoutException)
                 {
+                    CancelQuietly(pingCts);
+                    ObserveFailure(ping);
+
                     // The peer did not respond within the timeout: treat the connection as lost. Fault
                     // Completion first (so callers see why) then tear the transport down.
                     Shutdown(new ConnectionLostException(
@@ -207,14 +227,20 @@ public sealed partial class JsonRpc
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
         {
             // The connection is shutting down.
         }
-        catch
+        catch (ConnectionLostException)
         {
-            // The transport is already gone (a write failed or the handler was disposed); the read loop
-            // reports the underlying failure through Completion.
+            // The read loop (or another teardown path) already reported why the connection ended.
+        }
+        catch (Exception ex)
+        {
+            // An unexpected failure (for example a write error) means liveness can no longer be
+            // proven: fault the connection instead of silently disabling keep-alive.
+            Shutdown(new ConnectionLostException("The keep-alive ping failed.", ex));
+            RequestClose();
         }
     }
 
@@ -252,6 +278,12 @@ public sealed partial class JsonRpc
         finally
         {
             Shutdown(failure);
+            if (failure is not null)
+            {
+                // A framing or protocol failure leaves the stream in an unknown state: close the
+                // transport so the peer observes end-of-stream and in-flight handlers are canceled.
+                RequestClose();
+            }
         }
     }
 
@@ -312,6 +344,15 @@ public sealed partial class JsonRpc
         {
             JsonElement root = document.RootElement;
             int count = 0;
+            int maximumBatchSize = _options.MaximumBatchSize;
+            if (root.ValueKind == JsonValueKind.Array && maximumBatchSize > 0 && root.GetArrayLength() > maximumBatchSize)
+            {
+                // Reject the whole batch before looking at any element, with a single error reply.
+                ReserveInbound(1, utf8.Length);
+                _ = HandleAdmittedMessageAsync(default, 1, utf8.Length, batchTooLarge: true);
+                return;
+            }
+
             if (root.ValueKind == JsonValueKind.Array)
             {
                 // Correlate responses and cancellation before dispatching any batch handler. A
@@ -354,12 +395,16 @@ public sealed partial class JsonRpc
         }
     }
 
-    private async Task HandleAdmittedMessageAsync(JsonElement root, int count, int bytes)
+    private async Task HandleAdmittedMessageAsync(JsonElement root, int count, int bytes, bool batchTooLarge = false)
     {
         try
         {
             switch (root.ValueKind)
             {
+                case JsonValueKind.Undefined when batchTooLarge:
+                    await SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.InvalidRequest,
+                        "Invalid Request: the batch exceeds the maximum batch size.").ConfigureAwait(false);
+                    break;
                 case JsonValueKind.Object:
                     await HandleSingleMessage(root).ConfigureAwait(false);
                     break;
@@ -404,6 +449,12 @@ public sealed partial class JsonRpc
 
         foreach (JsonElement element in elements)
         {
+            // Stop at the first close (for example a failed handshake): later elements must not run.
+            if (IsClosing)
+            {
+                return;
+            }
+
             await DispatchBatchElementAsync(element, responses).ConfigureAwait(false);
         }
 
@@ -546,6 +597,11 @@ public sealed partial class JsonRpc
 
     private async Task DispatchRequestAsync(RequestId id, string method, JsonElement? @params, bool isNotification, List<byte[]>? batch = null, string? traceParent = null, string? traceState = null)
     {
+        if (IsClosing)
+        {
+            return;
+        }
+
         // Built-in liveness probe: answer immediately and cheaply, ahead of middleware and throttling,
         // so keep-alive works regardless of authentication state or concurrency pressure.
         if (string.Equals(method, KeepAlivePingMethodName, StringComparison.Ordinal))
@@ -558,32 +614,38 @@ public sealed partial class JsonRpc
             return;
         }
 
-        if (_inboundThrottle is not null)
+        // Every request gets its own token source so a streaming result can take ownership of it.
+        // It is registered for $/cancelRequest before throttling so a queued request can be canceled.
+        CancellationTokenSource? cts = null;
+        bool registered = false;
+        if (!isNotification)
         {
             try
             {
-                await _inboundThrottle.WaitAsync(_disposeCts.Token).ConfigureAwait(false);
+                cts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
             }
-            catch (OperationCanceledException)
+            catch (ObjectDisposedException)
             {
-                return; // The connection is shutting down.
+                return; // The connection was disposed.
             }
-        }
 
-        if (Volatile.Read(ref _shutdownFlag) != 0)
-        {
-            _inboundThrottle?.Release();
-            return;
-        }
+            if (!id.IsNull)
+            {
+                if (!_inboundCancellations.TryAdd(id, cts))
+                {
+                    cts.Dispose();
+                    await SendErrorAsync(id, JsonRpcErrorCodes.InvalidRequest,
+                        "Invalid Request: a request with the same id is already in progress.", batch: batch).ConfigureAwait(false);
+                    return;
+                }
 
-        CancellationTokenSource? cts = null;
-        if (!isNotification && !id.IsNull)
-        {
-            cts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
-            _inboundCancellations[id] = cts;
+                registered = true;
+            }
         }
 
         CancellationToken token = cts?.Token ?? _disposeCts.Token;
+        bool throttled = false;
+        bool ownershipTransferred = false;
 
         System.Diagnostics.Activity? activity = null;
         long startTimestamp = 0;
@@ -592,6 +654,17 @@ public sealed partial class JsonRpc
 
         try
         {
+            if (_inboundThrottle is not null)
+            {
+                await _inboundThrottle.WaitAsync(token).ConfigureAwait(false);
+                throttled = true;
+            }
+
+            if (IsClosing)
+            {
+                return;
+            }
+
             if (_inboundMiddleware is not null)
             {
                 JsonRpcDispatchDecision decision = await _inboundMiddleware
@@ -609,7 +682,13 @@ public sealed partial class JsonRpc
                         return;
 
                     case JsonRpcDispatchDecision.DecisionKind.Reject:
-                        JsonRpcDiagnostics.SetError(activity, decision.ErrorCode, decision.Message);
+                        if (decision.CloseConnection)
+                        {
+                            // Latch the close before replying so nothing queued behind this request,
+                            // including the rest of its batch, is dispatched while the reply is written.
+                            Volatile.Write(ref _dispatchClosed, 1);
+                        }
+
                         if (!isNotification)
                         {
                             await SendErrorAsync(id, decision.ErrorCode, decision.Message ?? "Request rejected.", decision.ErrorData, batch).ConfigureAwait(false);
@@ -624,6 +703,13 @@ public sealed partial class JsonRpc
                 }
             }
 
+            // A close may have been requested while the middleware ran (for example by a failed
+            // handshake elsewhere in the same batch); never invoke a handler after that.
+            if (IsClosing)
+            {
+                return;
+            }
+
             if (string.Equals(method, EnumeratorNextMethodName, StringComparison.Ordinal))
             {
                 await HandleEnumeratorNextAsync(id, @params, isNotification, batch).ConfigureAwait(false);
@@ -636,34 +722,51 @@ public sealed partial class JsonRpc
                 return;
             }
 
-            instrumented = true;
-            activity = JsonRpcDiagnostics.StartServerActivity(method, id, traceParent, traceState);
-            startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-            metricTags = new System.Diagnostics.TagList
-            {
-                { "rpc.system", JsonRpcDiagnostics.RpcSystem },
-                { "rpc.method", method },
-            };
-            JsonRpcDiagnostics.ServerCallsInFlight.Add(1, metricTags);
-
             RpcMethodEntry? entry;
             lock (_gate)
             {
                 _methods.TryGetValue(method, out entry);
             }
 
+            // Telemetry names come from the registered method table only. An unknown name is
+            // attacker-controlled and would otherwise create unbounded span names and metric series.
+            string telemetryMethod = entry is null ? JsonRpcDiagnostics.OtherMethodName : method;
+            instrumented = true;
+            activity = JsonRpcDiagnostics.StartServerActivity(telemetryMethod, id, traceParent, traceState);
+            startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            metricTags = new System.Diagnostics.TagList
+            {
+                { "rpc.system", JsonRpcDiagnostics.RpcSystem },
+                { "rpc.method", telemetryMethod },
+            };
+            JsonRpcDiagnostics.ServerCallsInFlight.Add(1, metricTags);
+
             if (entry is null)
             {
                 JsonRpcDiagnostics.SetError(activity, JsonRpcErrorCodes.MethodNotFound, "Method not found.");
                 if (!isNotification)
                 {
-                    await SendErrorAsync(id, JsonRpcErrorCodes.MethodNotFound, $"Method '{method}' was not found.", batch: batch).ConfigureAwait(false);
+                    await SendErrorAsync(id, JsonRpcErrorCodes.MethodNotFound, $"Method '{TruncateMethodName(method)}' was not found.", batch: batch).ConfigureAwait(false);
                 }
 
                 return;
             }
 
             object? result = await entry.InvokeAsync(@params, _serializerOptions, token).ConfigureAwait(false);
+
+            if (result is RpcEnumerableResult streaming && cts is not null)
+            {
+                // The iterator captured this request's token, so the enumeration owns its source from
+                // here on: it is canceled and disposed with the enumerator, not with the start request.
+                if (registered)
+                {
+                    _inboundCancellations.TryRemove(new KeyValuePair<RequestId, CancellationTokenSource>(id, cts));
+                    registered = false;
+                }
+
+                streaming.AttachCancellation(cts);
+                ownershipTransferred = true;
+            }
 
             if (isNotification)
             {
@@ -723,7 +826,10 @@ public sealed partial class JsonRpc
         }
         finally
         {
-            _inboundThrottle?.Release();
+            if (throttled)
+            {
+                _inboundThrottle!.Release();
+            }
 
             if (instrumented)
             {
@@ -734,11 +840,36 @@ public sealed partial class JsonRpc
 
             if (cts is not null)
             {
-                _inboundCancellations.TryRemove(id, out _);
-                cts.Dispose();
+                if (registered)
+                {
+                    // Remove only our own registration; never a later request that reused the id.
+                    _inboundCancellations.TryRemove(new KeyValuePair<RequestId, CancellationTokenSource>(id, cts));
+                }
+
+                if (!ownershipTransferred)
+                {
+                    cts.Dispose();
+                }
             }
         }
     }
+
+    /// <summary>
+    /// Whether the connection has stopped (or been asked to stop) dispatching inbound requests. Checked
+    /// before middleware and before invoking a handler so work queued behind a close, such as the rest
+    /// of a batch after a failed handshake, never runs.
+    /// </summary>
+    private bool IsClosing
+        => Volatile.Read(ref _shutdownFlag) != 0
+            || Volatile.Read(ref _dispatchClosed) != 0
+            || Volatile.Read(ref _closeRequested) != 0
+            || _disposeCts.IsCancellationRequested;
+
+    /// <summary>The longest method name echoed back in a method-not-found error.</summary>
+    private const int MaximumEchoedMethodNameLength = 128;
+
+    private static string TruncateMethodName(string method)
+        => method.Length <= MaximumEchoedMethodNameLength ? method : string.Concat(method.AsSpan(0, MaximumEchoedMethodNameLength), "...");
 
     private void HandleCancellationNotification(JsonElement? @params)
     {
@@ -750,14 +881,55 @@ public sealed partial class JsonRpc
         RequestId id = ReadRequestId(idElement);
         if (!id.IsNull && _inboundCancellations.TryGetValue(id, out CancellationTokenSource? cts))
         {
-            try
-            {
-                cts.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
+            // This runs on the read loop: never execute application cancellation callbacks inline,
+            // where one that blocks or throws would stall or kill the connection.
+            CancelInBackground(cts);
         }
+    }
+
+    /// <summary>Cancels <paramref name="cts"/>, running its callbacks inline and swallowing any failure.</summary>
+    private static void CancelQuietly(CancellationTokenSource cts)
+    {
+        try
+        {
+            cts.Cancel();
+        }
+        catch
+        {
+            // Already disposed, or an application cancellation callback threw. Cancel still runs
+            // every callback before throwing, so the source is canceled either way.
+        }
+    }
+
+    /// <summary>Cancels <paramref name="cts"/> with its callbacks on the thread pool, observing any failure.</summary>
+    private static void CancelInBackground(CancellationTokenSource cts)
+    {
+        Task cancel;
+        try
+        {
+            cancel = cts.CancelAsync();
+        }
+        catch
+        {
+            return; // Already disposed.
+        }
+
+        ObserveFailure(cancel);
+    }
+
+    private static void ObserveFailure(Task task)
+    {
+        if (task.IsCompleted)
+        {
+            _ = task.Exception;
+            return;
+        }
+
+        _ = task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     // ---- Response serialization --------------------------------------------
@@ -988,6 +1160,11 @@ public sealed partial class JsonRpc
         {
             return;
         }
+        catch
+        {
+            // An application cancellation callback threw; the source is canceled regardless and the
+            // transport must still be closed.
+        }
 
         _ = CloseTransportAsync();
     }
@@ -1021,7 +1198,8 @@ public sealed partial class JsonRpc
     }
 
     private void Shutdown(Exception? failure)
-    {        if (Interlocked.Exchange(ref _shutdownFlag, 1) == 1)
+    {
+        if (Interlocked.Exchange(ref _shutdownFlag, 1) == 1)
         {
             return;
         }
@@ -1033,54 +1211,60 @@ public sealed partial class JsonRpc
             _ => failure,
         };
 
-        foreach (KeyValuePair<long, PendingCall> pending in _pending)
+        // Every step must run even if an earlier one throws (application cancellation callbacks run
+        // inline here): Completion must always complete and enumerators must always be drained.
+        try
         {
-            pending.Value.Completion.TrySetException(new ConnectionLostException(
-                "The JSON-RPC connection was lost before the request completed.", completionError));
+            foreach (KeyValuePair<long, PendingCall> pending in _pending)
+            {
+                pending.Value.Completion.TrySetException(new ConnectionLostException(
+                    "The JSON-RPC connection was lost before the request completed.", completionError));
+            }
+
+            _pending.Clear();
+
+            foreach (KeyValuePair<RequestId, CancellationTokenSource> inbound in _inboundCancellations)
+            {
+                CancelQuietly(inbound.Value);
+                inbound.Value.Dispose();
+            }
+
+            _inboundCancellations.Clear();
         }
-
-        _pending.Clear();
-
-        foreach (KeyValuePair<RequestId, CancellationTokenSource> inbound in _inboundCancellations)
+        finally
         {
             try
             {
-                inbound.Value.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-
-            inbound.Value.Dispose();
-        }
-
-        _inboundCancellations.Clear();
-
-        // Serialize the drain with registration so a start cannot publish after shutdown.
-        List<RpcEnumerableResult> enumerators = new();
-        lock (_gate)
-        {
-            foreach (KeyValuePair<long, RpcEnumerableResult> enumerator in _enumerators)
-            {
-                if (_enumerators.TryRemove(enumerator.Key, out RpcEnumerableResult? enumerable))
+                // Serialize the drain with registration so a start cannot publish after shutdown.
+                List<RpcEnumerableResult> enumerators = new();
+                lock (_gate)
                 {
-                    enumerators.Add(enumerable);
+                    foreach (KeyValuePair<long, RpcEnumerableResult> enumerator in _enumerators)
+                    {
+                        if (_enumerators.TryRemove(enumerator.Key, out RpcEnumerableResult? enumerable))
+                        {
+                            enumerators.Add(enumerable);
+                        }
+                    }
+                }
+
+                // Disposal cancels each enumeration's own token before waiting for its read gate.
+                foreach (RpcEnumerableResult enumerable in enumerators)
+                {
+                    _ = DisposeReservedEnumeratorAsync(enumerable);
                 }
             }
-        }
-
-        foreach (RpcEnumerableResult enumerable in enumerators)
-        {
-            _ = DisposeReservedEnumeratorAsync(enumerable);
-        }
-
-        if (completionError is null)
-        {
-            _completion.TrySetResult();
-        }
-        else
-        {
-            _completion.TrySetException(completionError);
+            finally
+            {
+                if (completionError is null)
+                {
+                    _completion.TrySetResult();
+                }
+                else
+                {
+                    _completion.TrySetException(completionError);
+                }
+            }
         }
     }
 

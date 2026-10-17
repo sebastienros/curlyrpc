@@ -348,42 +348,53 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
             _disposed = true;
         }
 
-        _disposeCts.Cancel();
+        try
+        {
+            // A throwing application cancellation callback must not abort disposal.
+            CancelQuietly(_disposeCts);
 
-        if (_readLoopTask is not null)
+            if (_readLoopTask is not null)
+            {
+                try
+                {
+                    await _readLoopTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Read loop failures are surfaced through Completion, not Dispose.
+                }
+            }
+
+            if (_keepAliveTask is not null)
+            {
+                try
+                {
+                    await _keepAliveTask.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Keep-alive failures are surfaced through Completion, not Dispose.
+                }
+            }
+
+            Shutdown(null);
+
+            // Dispatches may still be unwinding and releasing the semaphore.
+        }
+        finally
         {
             try
             {
-                await _readLoopTask.ConfigureAwait(false);
+                if (_options.DisposeHandlerOnDispose)
+                {
+                    await _handler.DisposeAsync().ConfigureAwait(false);
+                }
             }
-            catch
+            finally
             {
-                // Read loop failures are surfaced through Completion, not Dispose.
+                _disposeCts.Dispose();
             }
         }
-
-        if (_keepAliveTask is not null)
-        {
-            try
-            {
-                await _keepAliveTask.ConfigureAwait(false);
-            }
-            catch
-            {
-                // Keep-alive failures are surfaced through Completion, not Dispose.
-            }
-        }
-
-        Shutdown(null);
-
-        // Dispatches may still be unwinding and releasing the semaphore.
-
-        if (_options.DisposeHandlerOnDispose)
-        {
-            await _handler.DisposeAsync().ConfigureAwait(false);
-        }
-
-        _disposeCts.Dispose();
     }
 
     private void EnsureNotListening()
