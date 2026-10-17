@@ -173,6 +173,11 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// array; an optional trailing <see cref="CancellationToken"/> parameter receives a token that is
     /// canceled if the caller cancels the request.
     /// </param>
+    /// <exception cref="ArgumentException">
+    /// A method named <paramref name="rpcMethodName"/> is already registered, or <paramref name="handler"/>
+    /// cannot be dispatched (it is <c>async void</c>, or takes <c>ref</c>/<c>out</c>/<c>in</c>, pointer or
+    /// ref struct parameters).
+    /// </exception>
     [RequiresUnreferencedCode(ReflectionDispatchMessage)]
     [RequiresDynamicCode(ReflectionDispatchMessage)]
     public void AddLocalRpcMethod(string rpcMethodName, Delegate handler)
@@ -181,7 +186,22 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(handler);
         EnsureNotListening();
 
-        _methods[rpcMethodName] = new ReflectionRpcMethod(rpcMethodName, handler.Target, handler.Method);
+        if (RpcMethodEligibility.GetUnsupportedSignatureReason(handler.Method) is { } reason)
+        {
+            throw new ArgumentException($"The handler for '{rpcMethodName}' cannot be registered because {reason}.", nameof(handler));
+        }
+
+        EnsureMethodNameAvailable(rpcMethodName);
+        _methods.Add(rpcMethodName, new ReflectionRpcMethod(rpcMethodName, handler.Target, handler.Method));
+    }
+
+    private void EnsureMethodNameAvailable(string rpcMethodName)
+    {
+        if (_methods.ContainsKey(rpcMethodName))
+        {
+            throw new ArgumentException(
+                $"A local RPC method named '{rpcMethodName}' is already registered.", nameof(rpcMethodName));
+        }
     }
 
     /// <summary>
@@ -190,11 +210,28 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// <param name="target">The object whose methods are exposed.</param>
     /// <param name="options">Registration options, or <see langword="null"/> for defaults.</param>
     /// <remarks>
+    /// <para>
     /// Every eligible public method becomes remotely callable. Expose only an object whose entire public
     /// surface is safe to invoke from the peer; apply <see cref="JsonRpcIgnoreAttribute"/> to methods that
     /// must not be reachable, and prefer a dedicated facade over registering a broad domain object. For
     /// untrusted peers, combine this with <see cref="JsonRpcOptions.InboundMiddleware"/> for authentication.
+    /// </para>
+    /// <para>
+    /// A public instance method is eligible unless it is: declared on, or an override of a method declared
+    /// on, <see cref="object"/> (<c>ToString</c>, <c>Equals</c>, <c>GetHashCode</c>, ...); compiler
+    /// generated (record members such as <c>&lt;Clone&gt;$</c> and <c>Deconstruct</c>); an implementation of
+    /// <see cref="IDisposable.Dispose"/>, <see cref="IAsyncDisposable.DisposeAsync"/> or
+    /// <see cref="IEquatable{T}.Equals(T)"/>; generic; a property or event accessor; <c>async void</c>;
+    /// or takes <c>ref</c>/<c>out</c>/<c>in</c>, pointer or ref struct parameters. Methods inherited from
+    /// base types are only included when <see cref="JsonRpcTargetOptions.IncludeInheritedMethods"/> is set.
+    /// Applying <see cref="JsonRpcMethodAttribute"/> to an unsupported signature throws.
+    /// </para>
     /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// Two eligible methods map to the same JSON-RPC name (for example overloads, or a name already
+    /// registered), or a method marked with <see cref="JsonRpcMethodAttribute"/> has an unsupported
+    /// signature. Nothing from <paramref name="target"/> is registered in that case.
+    /// </exception>
     [RequiresUnreferencedCode(ReflectionDispatchMessage)]
     [RequiresDynamicCode(ReflectionDispatchMessage)]
     public void AddLocalRpcTarget(object target, JsonRpcTargetOptions? options = null)
@@ -203,15 +240,19 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
         EnsureNotListening();
         options ??= new JsonRpcTargetOptions();
 
-        var bindingFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+        Type targetType = target.GetType();
+        var bindingFlags = BindingFlags.Public | BindingFlags.Instance;
         if (!options.IncludeInheritedMethods)
         {
-            bindingFlags |= System.Reflection.BindingFlags.DeclaredOnly;
+            bindingFlags |= BindingFlags.DeclaredOnly;
         }
 
-        foreach (var method in target.GetType().GetMethods(bindingFlags))
+        // Validate the whole target before registering anything, so a rejected target leaves no
+        // partial registration behind.
+        var discovered = new Dictionary<string, MethodInfo>(StringComparer.Ordinal);
+        foreach (var method in targetType.GetMethods(bindingFlags))
         {
-            if (method.DeclaringType == typeof(object) || method.IsSpecialName || method.IsGenericMethodDefinition)
+            if (!RpcMethodEligibility.IsExposableMember(targetType, method, options.IncludeInheritedMethods))
             {
                 continue;
             }
@@ -222,9 +263,43 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
             }
 
             var attribute = method.GetCustomAttribute<JsonRpcMethodAttribute>();
+            if (RpcMethodEligibility.GetUnsupportedSignatureReason(method) is { } reason)
+            {
+                if (attribute is not null)
+                {
+                    throw new ArgumentException(
+                        $"Method '{targetType.Name}.{method.Name}' is marked with [JsonRpcMethod] but cannot be exposed because {reason}.",
+                        nameof(target));
+                }
+
+                continue;
+            }
+
             string name = attribute?.Name ?? options.MethodNameTransform?.Invoke(method.Name) ?? method.Name;
 
-            _methods[name] = new ReflectionRpcMethod(name, target, method);
+            if (discovered.TryGetValue(name, out MethodInfo? existing))
+            {
+                string hint = existing.Name == method.Name
+                    ? " Overloads cannot share a JSON-RPC name; give each a distinct name with [JsonRpcMethod(\"...\")] or exclude one with [JsonRpcIgnore]."
+                    : " Give one of them a distinct name with [JsonRpcMethod(\"...\")] or exclude it with [JsonRpcIgnore].";
+                throw new ArgumentException(
+                    $"Methods '{targetType.Name}.{existing.Name}' and '{targetType.Name}.{method.Name}' both map to the JSON-RPC method name '{name}'.{hint}",
+                    nameof(target));
+            }
+
+            if (_methods.ContainsKey(name))
+            {
+                throw new ArgumentException(
+                    $"Method '{targetType.Name}.{method.Name}' maps to the JSON-RPC method name '{name}', which is already registered.",
+                    nameof(target));
+            }
+
+            discovered.Add(name, method);
+        }
+
+        foreach (var (name, method) in discovered)
+        {
+            _methods.Add(name, new ReflectionRpcMethod(name, target, method));
         }
     }
 
