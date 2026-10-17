@@ -589,9 +589,30 @@ sent verbatim.
 
 ### Limiting the exposed surface
 
-`AddLocalRpcTarget` makes **every** eligible public method of the target remotely callable. Register a
-narrow facade rather than a broad domain object, and apply `[JsonRpcIgnore]` to anything that must not be
-reachable. Combine with `InboundMiddleware` for authentication.
+`AddLocalRpcTarget(target)` makes **every** eligible public method of the target remotely callable. Prefer
+exposing a single interface, which keeps every other public method unreachable, even ones added to the
+class later:
+
+```csharp
+public interface ICalculator
+{
+    int Add(int a, int b);
+
+    [JsonRpcIgnore]                        // honored on the interface too
+    int Debug();
+}
+
+rpc.AddLocalRpcTarget(typeof(ICalculator), new Calculator());
+```
+
+Only the interface's methods (and those of the interfaces it inherits) are exposed, and calls dispatch
+through the interface, so explicit interface implementations work. Members of `IDisposable`,
+`IAsyncDisposable` and `IEquatable<T>` are never exposed, and `IncludeInheritedMethods` does not apply.
+Otherwise, register a narrow facade rather than a broad domain object, and apply `[JsonRpcIgnore]` to
+anything that must not be reachable. Combine either approach with `InboundMiddleware` for authentication.
+
+`[JsonRpcIgnore]` and `[JsonRpcMethod]` are honored whether they are declared on the class method or on an
+interface method it implements.
 
 A public instance method is **eligible** unless it is:
 
@@ -613,6 +634,9 @@ Registration fails fast with `ArgumentException` instead of silently overwriting
   `[JsonRpcMethod("...")]` or hide one with `[JsonRpcIgnore]`;
 - when a name is already registered on the connection (by `AddLocalRpcMethod` or another target);
 - when `[JsonRpcMethod]` is applied to an `async void` or by-ref method;
+- when a method carries both `[JsonRpcMethod]` and `[JsonRpcIgnore]` (counting attributes declared on an
+  implemented interface method);
+- when the type passed to `AddLocalRpcTarget(Type, object)` is not an interface the target implements;
 - when `AddLocalRpcMethod(string, Delegate)` is given an `async void` or by-ref delegate.
 
 A target that is rejected registers none of its methods.
