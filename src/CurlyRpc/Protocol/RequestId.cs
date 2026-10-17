@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -64,7 +63,7 @@ public readonly record struct RequestId
         }
 
         string json = element.GetRawText();
-        string key = NormalizeNumber(json, out string digits, out BigInteger exponent);
+        string key = NormalizeNumber(json, out string digits, out long exponent);
         long? integer = null;
         // Expand only small integral values; even a huge exponent never causes a huge allocation.
         if (exponent >= 0 && exponent <= 19 && digits.Length + (int)exponent <= 20 &&
@@ -101,12 +100,36 @@ public readonly record struct RequestId
     private string GetNumberKey() => _numberKey ?? NormalizeNumber(
         Number!.Value.ToString(CultureInfo.InvariantCulture), out _, out _);
 
-    private static string NormalizeNumber(string json, out string digits, out BigInteger exponent)
+    // Exponents beyond this magnitude are kept opaque. The bound leaves room to fold in the
+    // mantissa's fraction and trailing-zero counts (each at most int.MaxValue) without overflow.
+    private const long MaximumExponentMagnitude = 1_000_000_000_000_000_000;
+
+    // Peer-controlled tokens never go through BigInteger, whose parsing and formatting are
+    // quadratic in the token length. Every step here is linear.
+    private static string NormalizeNumber(string json, out string digits, out long exponent)
     {
         int exponentIndex = json.IndexOfAny(['e', 'E']);
         string mantissa = exponentIndex < 0 ? json : json[..exponentIndex];
-        exponent = exponentIndex < 0 ? BigInteger.Zero
-            : BigInteger.Parse(json.AsSpan(exponentIndex + 1), CultureInfo.InvariantCulture);
+        exponent = 0;
+        if (exponentIndex >= 0 &&
+            (!long.TryParse(json.AsSpan(exponentIndex + 1), NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture, out exponent) ||
+             exponent > MaximumExponentMagnitude || exponent < -MaximumExponentMagnitude))
+        {
+            // Zero is zero whatever its exponent. Any other value keeps its raw token as an opaque
+            // key; the 'x' prefix cannot collide with a canonical key, which starts with a digit or '-'.
+            if (mantissa.AsSpan().TrimStart('-').IndexOfAnyExcept('0', '.') < 0)
+            {
+                digits = "0";
+                exponent = 0;
+                return "0e0";
+            }
+
+            digits = mantissa;
+            exponent = long.MaxValue;
+            return "x" + json;
+        }
+
         int point = mantissa.IndexOf('.');
         if (point >= 0)
         {
@@ -119,7 +142,7 @@ public readonly record struct RequestId
         if (digits.Length == 0)
         {
             digits = "0";
-            exponent = BigInteger.Zero;
+            exponent = 0;
         }
         else
         {
