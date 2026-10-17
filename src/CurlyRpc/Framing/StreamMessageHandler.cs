@@ -37,9 +37,19 @@ public abstract class StreamMessageHandler : IJsonRpcMessageHandler
     /// The maximum size, in bytes, of a single inbound frame body. When greater than zero, a frame
     /// that exceeds this limit faults the read loop with a <see cref="JsonRpcMessageTooLargeException"/>
     /// before it is returned. Incomplete frames are rejected as soon as the framing can establish
-    /// that the body exceeds the limit. <c>0</c> (the default) means no limit.
+    /// that the body exceeds the limit. <c>0</c> (the default) means no limit; negative values are invalid.
     /// </summary>
-    public int MaximumMessageSize { get; set; }
+    public int MaximumMessageSize
+    {
+        get => _maximumMessageSize;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _maximumMessageSize = value;
+        }
+    }
+
+    private int _maximumMessageSize;
 
     /// <summary>
     /// Initializes a new <see cref="StreamMessageHandler"/>.

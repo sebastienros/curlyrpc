@@ -186,6 +186,37 @@ public sealed class AuthTests
     }
 
     [TestMethod]
+    [DataRow("")]
+    [DataRow("s3cr3t")]
+    [DataRow("s3cr3t-key-and-more")]
+    [DataRow("S3CR3T-KEY")]
+    public async Task Authenticate_WithTokenOfAnyOtherLength_Fails(string candidate)
+    {
+        // Digests are compared, so a prefix, an extension or an empty token is just another mismatch.
+        var (client, server) = CreatePair();
+        await using var _c = client;
+        await using var _s = server;
+
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(
+            async () => await client.InvokeAsync<bool>("authenticate", candidate));
+
+        Assert.AreEqual(HandshakeAuthenticationMiddleware.AuthenticationFailedErrorCode, ex.ErrorCode);
+    }
+
+    [TestMethod]
+    public async Task Authenticate_WithByteToken_AcceptsMatchingUtf8Token()
+    {
+        var options = ServerOptions();
+        options.InboundMiddleware = new HandshakeAuthenticationMiddleware(Encoding.UTF8.GetBytes(Token));
+        var (client, server) = CreatePair(options);
+        await using var _c = client;
+        await using var _s = server;
+
+        Assert.IsTrue(await client.InvokeAsync<bool>("authenticate", Token));
+        Assert.AreEqual("hello", await client.InvokeAsync<string>("echo", "hello"));
+    }
+
+    [TestMethod]
     public async Task Authenticate_WithInvalidToken_DisposesServerTransport()
     {
         var (h1, h2) = DuplexConnection.CreateHandlerPair();

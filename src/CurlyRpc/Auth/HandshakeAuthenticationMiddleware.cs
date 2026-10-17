@@ -7,8 +7,10 @@ namespace CurlyRpc;
 /// <summary>
 /// A built-in <see cref="JsonRpcInboundMiddleware"/> implementing the key-based handshake used by
 /// hosts such as <c>microsoft/aspire</c>: a peer must call <c>authenticate</c> with a shared secret
-/// before any other method is permitted. The token is compared in constant time with
-/// <see cref="CryptographicOperations.FixedTimeEquals(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>.
+/// before any other method is permitted. The SHA-256 digests of the supplied and expected tokens are
+/// compared in constant time with
+/// <see cref="CryptographicOperations.FixedTimeEquals(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>, so
+/// neither the token's contents nor its length leak through timing.
 /// </summary>
 /// <remarks>
 /// Each instance belongs to a single connection. The first inbound request or notification binds
@@ -33,7 +35,7 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
     /// <summary>Error code returned when authentication fails or a token is missing.</summary>
     public const int AuthenticationFailedErrorCode = -32002;
 
-    private readonly byte[] _expectedToken;
+    private readonly byte[] _expectedTokenHash;
     private readonly string _authenticateMethodName;
     private readonly string _pingMethodName;
     private JsonRpc? _connection;
@@ -49,14 +51,14 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
     {
     }
 
-    /// <summary>Creates the middleware with a raw byte secret. The array is copied.</summary>
+    /// <summary>Creates the middleware with a raw byte secret. Only its SHA-256 digest is retained.</summary>
     public HandshakeAuthenticationMiddleware(byte[] token, string authenticateMethodName = "authenticate", string pingMethodName = "ping")
     {
         ArgumentNullException.ThrowIfNull(token);
         ArgumentException.ThrowIfNullOrEmpty(authenticateMethodName);
         ArgumentException.ThrowIfNullOrEmpty(pingMethodName);
 
-        _expectedToken = (byte[])token.Clone();
+        _expectedTokenHash = SHA256.HashData(token);
         _authenticateMethodName = authenticateMethodName;
         _pingMethodName = pingMethodName;
     }
@@ -117,14 +119,19 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
                 "A token is required to authenticate.");
         }
 
+        // Comparing fixed-length digests rather than the raw bytes keeps the comparison from
+        // returning early on a length mismatch, which would reveal the expected token's length.
+        Span<byte> candidateHash = stackalloc byte[SHA256.HashSizeInBytes];
         bool valid;
         try
         {
-            valid = CryptographicOperations.FixedTimeEquals(candidate, _expectedToken);
+            SHA256.HashData(candidate, candidateHash);
+            valid = CryptographicOperations.FixedTimeEquals(candidateHash, _expectedTokenHash);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(candidate);
+            CryptographicOperations.ZeroMemory(candidateHash);
         }
 
         if (valid && !_failed)

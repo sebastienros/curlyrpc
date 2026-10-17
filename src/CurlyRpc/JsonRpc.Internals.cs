@@ -183,11 +183,17 @@ public sealed partial class JsonRpc
         }
 
         if (message.TryGetProperty("tracestate", out JsonElement traceStateElement)
-            && traceStateElement.ValueKind == JsonValueKind.String)
+            && traceStateElement.ValueKind == JsonValueKind.String
+            && traceStateElement.GetString() is { Length: <= MaximumTraceStateLength } state)
         {
-            traceState = traceStateElement.GetString();
+            // W3C Trace Context only requires propagating 512 characters of tracestate; a longer
+            // value is dropped instead of being copied into every Activity started from it.
+            traceState = state;
         }
     }
+
+    /// <summary>The longest inbound <c>tracestate</c> accepted, per the W3C Trace Context propagation minimum.</summary>
+    private const int MaximumTraceStateLength = 512;
 
     // ---- Keep-alive ---------------------------------------------------------
 
@@ -502,6 +508,13 @@ public sealed partial class JsonRpc
 
         bool validId = !hasId || idElement.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null;
         RequestId id = hasId && validId ? ReadRequestId(idElement) : RequestId.Null;
+        if (IsOversizedRequestId(id))
+        {
+            // Every reply echoes the id, and the default encoder can escape each character to six
+            // bytes. Refuse to echo an oversized id rather than amplify it.
+            return SendErrorAsync(RequestId.Null, JsonRpcErrorCodes.InvalidRequest, "Invalid Request: the id is too long.", batch: responses);
+        }
+
         bool hasParams = message.TryGetProperty("params", out JsonElement paramsElement);
         if (!IsValidRequestEnvelope(message))
         {
@@ -871,6 +884,12 @@ public sealed partial class JsonRpc
     private static string TruncateMethodName(string method)
         => method.Length <= MaximumEchoedMethodNameLength ? method : string.Concat(method.AsSpan(0, MaximumEchoedMethodNameLength), "...");
 
+    /// <summary>The longest request id, in characters (or raw number-token length), echoed back in a reply.</summary>
+    private const int MaximumRequestIdLength = 256;
+
+    private static bool IsOversizedRequestId(RequestId id)
+        => (id.String?.Length ?? id.NumberJson?.Length ?? 0) > MaximumRequestIdLength;
+
     private void HandleCancellationNotification(JsonElement? @params)
     {
         if (@params is not { ValueKind: JsonValueKind.Object } obj || !obj.TryGetProperty("id", out JsonElement idElement))
@@ -949,11 +968,28 @@ public sealed partial class JsonRpc
 
     private byte[] SerializeError(RequestId id, int code, string message, object? data)
     {
+        RawJsonValue? rawData = null;
+        if (data is not null)
+        {
+            try
+            {
+                rawData = SerializeToRaw(data);
+            }
+            catch (Exception ex)
+            {
+                // Error data comes from application code (LocalRpcException.ErrorData, middleware
+                // decisions). Failing to serialize it is an application bug, but the peer still gets
+                // a reply and the connection stays open.
+                code = JsonRpcErrorCodes.InternalError;
+                message = _exposeExceptionDetails ? ex.Message : "An internal error occurred.";
+            }
+        }
+
         var detail = new JsonRpcErrorDetail
         {
             Code = code,
             Message = message,
-            Data = data is null ? null : SerializeToRaw(data),
+            Data = rawData,
         };
 
         var wire = new JsonRpcErrorWire { Id = id, Error = detail };

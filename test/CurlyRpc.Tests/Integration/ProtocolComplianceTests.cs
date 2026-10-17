@@ -573,6 +573,33 @@ public sealed class ProtocolComplianceTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OversizedRequestId_IsRejectedWithoutEchoingIt(bool batch)
+    {
+        var (server, peer) = CreateServer();
+        await using var lifetime = server;
+
+        foreach (string id in new[] { "\"" + new string('<', 257) + "\"", new string('1', 257) })
+        {
+            string request = $$$"""{"jsonrpc":"2.0","method":"echo","params":[5],"id":{{{id}}}}""";
+            await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(batch ? "[" + request + "]" : request), CancellationToken.None);
+            using JsonDocument response = await ReadResponseAsync(peer);
+            JsonElement root = batch ? response.RootElement[0] : response.RootElement;
+            Assert.AreEqual(JsonValueKind.Null, root.GetProperty("id").ValueKind);
+            Assert.AreEqual(JsonRpcErrorCodes.InvalidRequest, root.GetProperty("error").GetProperty("code").GetInt32());
+        }
+
+        // Ids at the limit are still echoed.
+        string longestId = new string('a', 256);
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes(
+            $$$"""{"jsonrpc":"2.0","method":"echo","params":[5],"id":"{{{longestId}}}"}"""), CancellationToken.None);
+        using JsonDocument accepted = await ReadResponseAsync(peer);
+        Assert.AreEqual(longestId, accepted.RootElement.GetProperty("id").GetString());
+        Assert.AreEqual(5, accepted.RootElement.GetProperty("result").GetInt32());
+    }
+
     private static (JsonRpc Server, HeaderDelimitedMessageHandler ClientHandler) CreateServer(Action<JsonRpc>? configure = null)
     {
         var pipe1 = new PipeStream();

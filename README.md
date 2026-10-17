@@ -450,10 +450,11 @@ Both handlers accept either a single duplex stream or separate send/receive stre
 ## Key-based authentication
 
 The built-in `HandshakeAuthenticationMiddleware` implements the token handshake used by hosts such as
-`microsoft/aspire`: a peer must call `authenticate(token)` before any other method. The token is
-compared in constant time; `ping` is allowed pre-auth; a wrong token closes the connection. A failed
-handshake is permanent: requests already queued behind it — including later elements of the same batch,
-even one carrying the correct token — are rejected or dropped, and no handler runs after the close.
+`microsoft/aspire`: a peer must call `authenticate(token)` before any other method. The token's
+SHA-256 digest is compared in constant time, so timing reveals neither its contents nor its length;
+`ping` is allowed pre-auth; a wrong token closes the connection. A failed handshake is permanent:
+requests already queued behind it — including later elements of the same batch, even one carrying the
+correct token — are rejected or dropped, and no handler runs after the close.
 
 Create a new middleware instance for each connection. Its first inbound request or notification
 (including `ping`) permanently binds it to that connection. Sharing the middleware, including by
@@ -537,6 +538,10 @@ At capacity, new streaming results are disposed without advancing and rejected w
 Slots include first-batch reads and disposal, and are released on completion, abort, failure, or
 shutdown. The normal default is zero (unlimited). Streams have no idle expiry, so abandoned streams
 occupy bounded capacity until abort or disconnect; size the limit for legitimate slow consumers.
+
+Whatever the options, a request whose `id` is longer than 256 characters (or, for a number, whose raw
+token is) is rejected with Invalid Request and a `null` id instead of being echoed back, and negative
+values for any size or concurrency limit throw `ArgumentOutOfRangeException`.
 
 ### Deserialization safety (a permanent invariant)
 
@@ -668,7 +673,8 @@ The fields are written as optional `traceparent`/`tracestate` members on the JSO
 omitted when there is no active W3C-format `Activity`, so the wire stays backward/forward compatible —
 peers that don't understand them (including a peer that leaves the option off) simply ignore the extra
 members. Internal control messages (`$/cancelRequest`, `$/ping`, streaming `$/enumerator/*`) never
-carry trace context.
+carry trace context. An inbound `tracestate` longer than 512 characters (the W3C propagation minimum)
+is dropped; the `traceparent` is still honored.
 
 ## Options reference
 
