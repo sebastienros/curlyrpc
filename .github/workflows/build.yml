@@ -24,3 +24,16 @@ jobs:
 
     - name: Test
       run: dotnet test --solution CurlyRpc.slnx -c Release
+
+    - name: Pack preview package
+      run: |
+        dotnet pack src/CurlyRpc/CurlyRpc.csproj \
+          --configuration Release \
+          --output artifacts \
+          -p:Version=1.0.0-preview-${{ github.run_number }} \
+          -p:ContinuousIntegrationBuild=True
+
+    - name: Push preview package to Feedz
+      env:
+        FEEDZ_IO_API_KEY: ${{ secrets.FEEDZ_IO_API_KEY }}
+      run: dotnet nuget push "artifacts/*.nupkg" --api-key "$FEEDZ_IO_API_KEY" --source https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json --skip-duplicate
