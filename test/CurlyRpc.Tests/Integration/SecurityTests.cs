@@ -157,6 +157,34 @@ public sealed class SecurityTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task UnserializableErrorData_RepliesInternalError_AndKeepsConnectionOpen(bool exposeDetails)
+    {
+        var (h1, h2) = DuplexConnection.CreateHandlerPair();
+        var client = new JsonRpc(h1, new JsonRpcOptions { SerializerOptions = Web() });
+        var server = new JsonRpc(h2, new JsonRpcOptions { SerializerOptions = Web(), ExposeExceptionDetails = exposeDetails });
+        server.AddLocalRpcMethod("fail", new Func<int>(() => throw new LocalRpcException("app error", 42, new ThrowingErrorData())));
+        server.AddLocalRpcMethod("echo", (string s) => s);
+        server.StartListening();
+        client.StartListening();
+        await using var _c = client;
+        await using var _s = server;
+
+        var ex = await Assert.ThrowsExactlyAsync<RemoteInvocationException>(
+            async () => await client.InvokeAsync<int>("fail"));
+
+        Assert.AreEqual(JsonRpcErrorCodes.InternalError, ex.ErrorCode);
+        Assert.AreEqual(!exposeDetails, ex.Message == "An internal error occurred.");
+        Assert.AreEqual("still open", await client.InvokeAsync<string>("echo", "still open"));
+    }
+
+    private sealed class ThrowingErrorData
+    {
+        public string Value => throw new InvalidOperationException("data getter failed");
+    }
+
+    [TestMethod]
     public async Task ExposeExceptionDetailsTrue_IsDefault_AndIncludesMessage()
     {
         var (client, server) = CreateBoomPair(exposeExceptionDetails: true);

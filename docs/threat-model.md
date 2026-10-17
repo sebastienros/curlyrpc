@@ -1,8 +1,8 @@
 # CurlyRpc threat model
 
-Status: initial assessment, October 2026, against `main` at `0c6f038`. Findings marked **open** are
-not yet fixed. Each finding was reproduced with a proof of concept against the current source, or
-confirmed by reading the code where noted.
+Status: initial assessment, October 2026, against `main` at `0c6f038`; statuses re-checked against
+the code after #21. Findings marked **open** are not yet fixed. Each finding was reproduced with a proof
+of concept against the current source, or confirmed by reading the code where noted.
 
 ## 1. Scope
 
@@ -107,7 +107,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | F-6 | Huge numeric request `id` burns CPU | ✅ | Exponents are parsed as a bounded `long`, never `BigInteger`. Exponents beyond ±1e18 get an opaque raw-token key; zero still normalizes. A 1 MB id now normalizes in milliseconds. Fixed in #18. |
 | F-7 | Partial-frame rescans (slow drip) | ✅ | Both scanners remember how far they have searched. Fixed in #18. |
 | F-8 | Per-connection buffers retained at peak size | ✅ | Buffers over 1 MiB are released once the large frame is consumed. Fixed in #18. |
-| F-9 | Size cap silently not applied | ⚠️ Info | `MaximumInboundMessageSize` is ignored when the caller passes their own handler (documented). Negative values for the size and concurrency caps are silently treated as unlimited. |
+| F-9 | Size cap silently not applied | ⚠️ Info | Negative size and concurrency limits now throw `ArgumentOutOfRangeException` (the `JsonRpc` constructor validates every option, and `StreamMessageHandler.MaximumMessageSize` validates on set). **Still open:** `MaximumInboundMessageSize` is ignored when the caller passes their own handler (documented). |
 
 ### 6.2 Resource exhaustion and amplification (B3, B6)
 
@@ -115,7 +115,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | --- | --- | --- | --- |
 | R-1 | Request flood exhausts handlers or the thread pool | ✅ (opt-in) | `MaximumConcurrentRequests` throttle. |
 | R-2 | Non-reading peer piles up queued work and replies | ✅ (opt-in) | Admission budget by count and bytes, held until the reply is written (`JsonRpc.Internals.cs:258-276`, `:391-398`). |
-| R-3 | Response amplification | ⚠️ Low | Method-not-found echoes at most 128 characters of the method name, and `MaximumBatchSize` (1000 under `CreateHardened`, `0` = unlimited by default) rejects an oversized batch with one error before any element runs. Fixed in #21. **Still open:** echoed string ids and the default encoder's `\uXXXX` escaping still amplify replies, and there is no outbound byte budget. |
+| R-3 | Response amplification | ⚠️ Low | Method-not-found echoes at most 128 characters of the method name, and `MaximumBatchSize` (1000 under `CreateHardened`, `0` = unlimited by default) rejects an oversized batch with one error before any element runs (#21). A request id longer than 256 characters (string length, or raw token length for a number) is rejected with Invalid Request and a `null` id under every configuration, so escaping can no longer inflate an echoed id. **Still open:** there is no outbound byte budget, so handler results and application error messages are unbounded. |
 | R-4 | Too many open server streams | ✅ (opt-in) | `MaximumActiveEnumerations`. There is no idle expiry, so abandoned streams hold slots until disconnect. |
 | R-5 | Malicious server streams forever to a client | ⚠️ Low | `InvokeAsyncEnumerable` loops until `finished`, including over empty batches. Only the consumer's cancellation stops it. |
 | R-6 | **Permissive defaults** | ⚠️ | All limits default to unlimited and `ExposeExceptionDetails` to `true`. The README documents this and points to `CreateHardened`. Consider making hardened the default; see §8. |
@@ -126,7 +126,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | --- | --- | --- | --- |
 | A-1 | Calling methods before authenticating | ✅ | Middleware gates every request and notification, including batch elements and `$/enumerator/*` (`JsonRpc.Internals.cs:595-637`). Only `$/ping`, `$/cancelRequest` and responses bypass it, and none of them reach app code. |
 | A-2 | Middleware shared across connections lets one connection's auth apply to another | ✅ | Atomic, permanent binding (`HandshakeAuthenticationMiddleware.cs:71-78`), with tests. Fixed in #8. |
-| A-3 | Timing attack on the token | ⚠️ Low | `FixedTimeEquals`, but it returns early on a length mismatch, which leaks the token's length. |
+| A-3 | Timing attack on the token | ✅ | The SHA-256 digests of the candidate and expected tokens are compared with `FixedTimeEquals`, so a length mismatch no longer returns early. Only the digest of the secret is retained. |
 | A-4 | Online token guessing within one batch, with handlers running after close is requested | ✅ | A failed handshake latches permanently in `HandshakeAuthenticationMiddleware`, rejecting every later request including a correct token. Dispatch stops once a close is requested (checked before middleware, before the handler, and between batch elements). Fixed in #21. |
 | A-5 | Cross-connection cancellation, response spoofing or stream hijacking | ✅ | All correlation state is per `JsonRpc` instance. Responses only match `long` ids this side issued (`:516`). Enumerator tokens are sequential but scoped to the connection. |
 | A-6 | Another local user reaches the socket or pipe | ⚠️ Low | `RestrictToCurrentUser` chmods after `bind()`, so there is a window, and it follows symlinks. The Windows guidance is incomplete: the default pipe DACL allows read for Everyone, so `PipeOptions.CurrentUserOnly` should be recommended. |
@@ -154,7 +154,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | L-6 | Duplicate inbound request ids | ✅ | A duplicate in-flight id is rejected with Invalid Request (`TryAdd`), and each request removes only its own registration (`TryRemove(KeyValuePair)`). Fixed in #21. |
 | L-7 | Cancel of a request still queued behind the throttle is lost | ✅ | The CTS is registered before the throttle wait, and the wait observes it. Fixed in #21. |
 | L-8 | Keep-alive silently disabled | ✅ | Any `JsonRpcException` reply (except `ConnectionLostException`) counts as alive. The whole ping, including the write, is raced against the timeout. Unexpected errors fault the connection instead of ending the loop, so an oversized `KeepAliveInterval` now faults rather than silently disabling keep-alive (it is still not validated up front). Fixed in #21. |
-| L-9 | Unserializable `LocalRpcException.ErrorData` closes the connection | ⚠️ Info | It throws inside the catch at `:704` and escapes to the connection-level handler. That's an app bug, but a peer can trigger it remotely. |
+| L-9 | Unserializable `LocalRpcException.ErrorData` closes the connection | ✅ | Error data that fails to serialize (from `LocalRpcException` or a middleware decision) is dropped, and the reply becomes Internal Error, scrubbed unless `ExposeExceptionDetails` is on. The connection stays open. |
 
 ### 6.6 Information disclosure and observability (B6, B7)
 
@@ -163,7 +163,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | I-1 | Exception text leaks to the peer | ✅ (opt-in) | `ExposeExceptionDetails = false` scrubs every generic error path, including middleware, parameter deserialization and streaming faults. `JsonException` text is never echoed. Stack traces and type names are never sent (unlike LSP4J, pylsp and jsonrpc4j). The default is `true`. |
 | I-2 | Parameter names in InvalidParams messages | ⚠️ Info | `"Missing required parameter 'ApiKey'"` is sent even when scrubbing is on. |
 | I-3 | Peer-controlled method names become metric and trace tags, and Error logs | ✅ | The server Activity and `rpc.method` tag are created after method lookup, with unknown methods recorded as `_OTHER`. `rpc.jsonrpc.request_id` is capped at 128 characters. `JsonRpcLoggingBridge` logs method-not-found at Warning, and its message names `_OTHER` rather than the raw method. Fixed in #21. |
-| I-4 | Peer-supplied trace context trusted | ⚠️ Low | Only with `PropagateTraceContext = true`. `traceparent` is validated by `ActivityContext.TryParse`, but the peer controls the sampled flag, and `tracestate` isn't length-capped. |
+| I-4 | Peer-supplied trace context trusted | ⚠️ Low | Only with `PropagateTraceContext = true`. `traceparent` is validated by `ActivityContext.TryParse`, and an inbound `tracestate` over 512 characters (the W3C propagation minimum) is dropped. **Still open:** the peer controls the sampled flag. |
 | I-5 | Exception messages recorded in local telemetry | ⚠️ Info | Activity status and the logging bridge record `exception.Message` even when wire scrubbing is on. |
 
 ### 6.7 Build and supply chain
@@ -171,8 +171,8 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | # | Threat | Status | Notes |
 | --- | --- | --- | --- |
 | S-1 | Vulnerable dependency | ✅ | One runtime dependency (`Microsoft.Extensions.Logging.Abstractions`). Central package management with transitive pinning. A vulnerable SourceLink dependency was bumped in #1. |
-| S-2 | Generator emits broken or injected code | ⚠️ Info | Its inputs are the developer's own symbols, so there's no injection risk. `Quote` escapes only `\` and `"`, so a newline in a `[JsonRpcMethod]` name breaks compilation. |
-| S-3 | Package or publish compromise | ⚠️ | No `SECURITY.md`, no `NuGetAudit`/CodeQL gate, and publishing uses an API key rather than trusted publishing. See §8. |
+| S-2 | Generator emits broken or injected code | ✅ | Its inputs are the developer's own symbols, so there's no injection risk. Wire names are emitted with Roslyn's `SymbolDisplay.FormatLiteral`, so control characters in a `[JsonRpcMethod]` name no longer break compilation. |
+| S-3 | Package or publish compromise | ⚠️ | `SECURITY.md` with private vulnerability reporting (#17) and NuGet trusted publishing (#16) are in place. **Still open:** no `NuGetAudit`/CodeQL gate, and Actions are pinned to tags rather than SHAs. See §8. |
 
 ## 7. Comparison with similar libraries
 
@@ -182,7 +182,7 @@ Status key: ✅ mitigated · ⚠️ partially mitigated or opt-in · ❌ open.
 | No message size cap ([StreamJsonRpc #326](https://github.com/microsoft/vs-streamjsonrpc/issues/326), Go `x/tools` jsonrpc2, python-lsp-jsonrpc) | ✅ Opt-in cap (F-1) · ✅ header block (F-3, #18) |
 | Deep nesting ([Newtonsoft CVE-2024-21907](https://github.com/advisories/GHSA-5crp-9r3c-p9vr)) | ✅ (F-5) |
 | Quadratic big-integer parsing ([CPython CVE-2020-10735](https://github.com/advisories/GHSA-6jr7-xr67-mgxw)) | ✅ (F-6, #18) |
-| Unbounded batches / response size ([go-ethereum #26681](https://github.com/ethereum/go-ethereum/pull/26681), [#27924](https://github.com/ethereum/go-ethereum/pull/27924), [jayson #215](https://github.com/tedeh/jayson/pull/215), [jsonrpsee #711](https://github.com/paritytech/jsonrpsee/pull/711)) | ⚠️ Count- and batch-bounded when hardened, no response byte budget (R-3) |
+| Unbounded batches / response size ([go-ethereum #26681](https://github.com/ethereum/go-ethereum/pull/26681), [#27924](https://github.com/ethereum/go-ethereum/pull/27924), [jayson #215](https://github.com/tedeh/jayson/pull/215), [jsonrpsee #711](https://github.com/paritytech/jsonrpsee/pull/711)) | ⚠️ Count- and batch-bounded when hardened, echoed ids capped, no response byte budget (R-3) |
 | Slow reader, unbounded outbound queue ([jsonrpsee #962](https://github.com/paritytech/jsonrpsee/pull/962)) | ✅ Admission holds until the write completes (R-2) |
 | Unbounded subscriptions ([Besu GHSA-ffqr-pj4h-xq37](https://github.com/hyperledger/besu/security/advisories/GHSA-ffqr-pj4h-xq37)) | ✅ Opt-in cap, no idle expiry (R-4) |
 | Pending calls not settled on close, handler context not canceled ([sourcegraph/jsonrpc2 #82](https://github.com/sourcegraph/jsonrpc2/pull/82), [#90](https://github.com/sourcegraph/jsonrpc2/pull/90)) | ✅ on close and for calls issued after close (L-4) |
@@ -218,16 +218,16 @@ Then fix the lifecycle bugs (hangs, leaks and crashes):
    `IncludeInheritedMethods` to `false`.
 9. **I-3** (done in #21): tag unknown methods as `_OTHER`, start the activity only after the method resolves, and
    log method-not-found below Error.
-10. **R-3** (method-name truncation and `MaximumBatchSize` done in #21): stop echoing the method name (or truncate it), cap echoed string ids, and add a
-    `MaximumBatchSize`.
+10. **R-3** (method-name truncation and `MaximumBatchSize` done in #21, id cap done since): stop echoing the method name (or truncate it), cap echoed string ids, and add a
+    `MaximumBatchSize`. An outbound byte budget remains open.
 
 Hardening and process:
 
 11. Consider making the hardened limits the default, with `JsonRpcOptions.CreateTrusted()` (or
-    similar) as the explicit opt-out. Reject negative option values. Apply `MaximumInboundMessageSize`
+    similar) as the explicit opt-out. Reject negative option values (done). Apply `MaximumInboundMessageSize`
     to any `StreamMessageHandler` that has no cap of its own.
 12. Add fuzzing (SharpFuzz) for the framing handlers, `RequestId`, and `HandleMessage`, which are
     the surfaces that parse peer bytes before authentication.
-13. Add `SECURITY.md` and GitHub private vulnerability reporting, enable `NuGetAudit` and CodeQL in
-    CI, pin Actions to SHAs, and move publishing to NuGet trusted publishing.
+13. Add `SECURITY.md` and GitHub private vulnerability reporting (done in #17), enable `NuGetAudit` and CodeQL in
+    CI, pin Actions to SHAs, and move publishing to NuGet trusted publishing (done in #16).
 14. Add a test for every threat above, so each mitigation is pinned against regressions.

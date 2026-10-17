@@ -141,6 +141,33 @@ public sealed class TraceContextPropagationTests
     }
 
     [TestMethod]
+    public async Task Invoke_WithOversizedTraceState_DropsTraceStateButKeepsParent()
+    {
+        var activities = new ConcurrentQueue<Activity>();
+        using var listener = ListenAll(activities);
+
+        var (client, server) = CreatePair(propagate: true);
+        await using var _c = client;
+        await using var _s = server;
+
+        server.AddLocalRpcMethod("square", (int x) => x * x);
+        server.StartListening();
+        client.StartListening();
+
+        ActivityTraceId traceId;
+        using (Activity outer = s_testSource.StartActivity("outer", ActivityKind.Internal)!)
+        {
+            outer.TraceStateString = "vendor=" + new string('a', 600);
+            traceId = outer.TraceId;
+            _ = await client.InvokeAsync<int>("square", 6);
+        }
+
+        Activity serverActivity = await WaitForActivityAsync(activities, ActivityKind.Server, "square");
+        Assert.AreEqual(traceId, serverActivity.TraceId);
+        Assert.IsNull(serverActivity.TraceStateString);
+    }
+
+    [TestMethod]
     public async Task Notify_WithPropagationEnabled_LinksServerSpanToCallerTrace()
     {
         var activities = new ConcurrentQueue<Activity>();

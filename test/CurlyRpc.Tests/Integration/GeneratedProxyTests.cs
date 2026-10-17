@@ -29,6 +29,14 @@ public interface IKeywordApi
     Task @void();
 }
 
+[JsonRpcProxy]
+public interface IEscapedNameApi
+{
+    // Wire names are emitted as C# string literals; control characters must not break the generated code.
+    [JsonRpcMethod("line\nbreak\t\"quoted\"\\")]
+    Task<string> OddNameAsync();
+}
+
 [TestClass]
 public sealed class GeneratedProxyTests
 {
@@ -46,6 +54,21 @@ public sealed class GeneratedProxyTests
         client.StartListening();
 
         return (client.CreateICalculatorProxy(), client, server);
+    }
+
+    [TestMethod]
+    public async Task Proxy_EscapesControlCharactersInWireName()
+    {
+        var (h1, h2) = DuplexConnection.CreateHandlerPair();
+        var client = new JsonRpc(h1, Options());
+        var server = new JsonRpc(h2, Options());
+        server.AddLocalRpcMethod("line\nbreak\t\"quoted\"\\", () => "ok");
+        server.StartListening();
+        client.StartListening();
+        await using var _c = client;
+        await using var _s = server;
+
+        Assert.AreEqual("ok", await client.CreateIEscapedNameApiProxy().OddNameAsync());
     }
 
     [TestMethod]

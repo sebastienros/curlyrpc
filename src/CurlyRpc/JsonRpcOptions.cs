@@ -90,7 +90,7 @@ public sealed class JsonRpcOptions
     /// The maximum size, in bytes, of a single inbound message. A peer that declares (or streams) a
     /// larger frame faults the connection with a <see cref="JsonRpcMessageTooLargeException"/> before
     /// the body is buffered, preventing a memory-exhaustion denial of service. <c>0</c> (the default)
-    /// means no limit.
+    /// means no limit; negative values are invalid.
     /// </summary>
     /// <remarks>
     /// This is only applied automatically when the connection creates its own message handler (the
@@ -104,7 +104,7 @@ public sealed class JsonRpcOptions
     /// <summary>
     /// The maximum number of inbound requests and notifications dispatched concurrently. Additional
     /// inbound calls queue until a slot frees, bounding handler concurrency (CPU and thread-pool
-    /// pressure) under a request flood. <c>0</c> (the default) means no limit.
+    /// pressure) under a request flood. <c>0</c> (the default) means no limit; negative values are invalid.
     /// Responses to this peer's own outbound calls are never throttled.
     /// </summary>
     public int MaximumConcurrentRequests { get; set; }
@@ -147,7 +147,8 @@ public sealed class JsonRpcOptions
     /// <summary>
     /// Maximum admitted inbound requests, notifications and protocol-error replies, including queued
     /// dispatches and responses awaiting transport writes. Batch elements count individually and retain
-    /// their reservations until the batch reply is written. Zero (the default) means unlimited.
+    /// their reservations until the batch reply is written. Zero (the default) means unlimited; negative
+    /// values are invalid.
     /// Exceeding the limit faults and closes the connection without queuing an overload response.
     /// Responses and cancellation notifications bypass admission so duplex calls can make progress.
     /// </summary>
@@ -155,7 +156,7 @@ public sealed class JsonRpcOptions
 
     /// <summary>
     /// Maximum total UTF-8 frame bytes retained by admitted inbound work. A batch reserves its entire
-    /// frame until its reply is written. Zero (the default) means unlimited. This bounds input retention,
+    /// frame until its reply is written. Zero (the default) means unlimited; negative values are invalid. This bounds input retention,
     /// not handler allocations or serialized response sizes. Exceeding it closes the connection.
     /// </summary>
     public long MaximumPendingInboundBytes { get; set; }

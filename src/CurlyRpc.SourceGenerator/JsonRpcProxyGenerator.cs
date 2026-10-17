@@ -243,7 +243,7 @@ public sealed class JsonRpcProxyGenerator : IIncrementalGenerator
     }
 
     private static string Quote(string value)
-        => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        => SymbolDisplay.FormatLiteral(value, quote: true);
 
     private enum ReturnShape
     {

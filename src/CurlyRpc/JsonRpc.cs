@@ -70,6 +70,8 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(messageHandler);
         _handler = messageHandler;
         _options = options ?? new JsonRpcOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumInboundMessageSize);
+        ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumConcurrentRequests);
         ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumActiveEnumerations);
         _maximumActiveEnumerations = _options.MaximumActiveEnumerations;
         ArgumentOutOfRangeException.ThrowIfNegative(_options.MaximumPendingInboundRequests);

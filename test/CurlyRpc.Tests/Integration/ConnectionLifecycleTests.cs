@@ -419,7 +419,8 @@ public sealed class ConnectionLifecycleTests
         {
         }
 
-        string longId = new string('i', 300);
+        // Longer than the 128-character tag cap, but within the 256-character id limit.
+        string longId = new string('i', 200);
         await WriteAsync(peer, $$"""{"jsonrpc":"2.0","method":"{{echoMethod}}","params":[3],"id":"{{longId}}"}""");
         using (JsonDocument _2 = await ReadAsync(peer))
         {
@@ -536,6 +537,20 @@ public sealed class ConnectionLifecycleTests
         Assert.AreEqual(0, new JsonRpcOptions().MaximumBatchSize);
         Assert.AreEqual(JsonRpcOptions.DefaultHardenedMaximumBatchSize, JsonRpcOptions.CreateHardened().MaximumBatchSize);
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpcOptions { MaximumBatchSize = -1 });
+    }
+
+    [TestMethod]
+    public void NegativeLimits_AreRejected()
+    {
+        var (h1, h2) = DuplexConnection.CreateHandlerPair();
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(h1, new JsonRpcOptions { MaximumInboundMessageSize = -1 }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(h1, new JsonRpcOptions { MaximumConcurrentRequests = -1 }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(h1, new JsonRpcOptions { MaximumActiveEnumerations = -1 }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(h1, new JsonRpcOptions { MaximumPendingInboundRequests = -1 }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(h1, new JsonRpcOptions { MaximumPendingInboundBytes = -1 }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => h2.MaximumMessageSize = -1);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new NewlineDelimitedMessageHandler(new MemoryStream(), maximumMessageSize: -1));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new JsonRpc(new MemoryStream(), new JsonRpcOptions { MaximumInboundMessageSize = -1 }));
     }
 
     // ---- Helpers --------------------------------------------------------------------------------
