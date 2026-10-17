@@ -123,6 +123,28 @@ public sealed class JsonRpcOptions
     public int MaximumActiveEnumerations { get; set; }
 
     /// <summary>
+    /// The maximum number of elements accepted in one inbound JSON-RPC batch. A larger batch is rejected
+    /// as a whole, before any element is dispatched, with a single <see cref="JsonRpcErrorCodes.InvalidRequest"/>
+    /// error; the connection stays open. Zero (the default) means unlimited; negative values are invalid.
+    /// </summary>
+    /// <remarks>
+    /// Batch elements run one after another, so a single huge batch can monopolize dispatch for a long
+    /// time. Choose a finite limit for untrusted peers; <see cref="CreateHardened"/> uses
+    /// <see cref="DefaultHardenedMaximumBatchSize"/>.
+    /// </remarks>
+    public int MaximumBatchSize
+    {
+        get => _maximumBatchSize;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            _maximumBatchSize = value;
+        }
+    }
+
+    private int _maximumBatchSize;
+
+    /// <summary>
     /// Maximum admitted inbound requests, notifications and protocol-error replies, including queued
     /// dispatches and responses awaiting transport writes. Batch elements count individually and retain
     /// their reservations until the batch reply is written. Zero (the default) means unlimited.
@@ -180,6 +202,11 @@ public sealed class JsonRpcOptions
     public const int DefaultHardenedMaximumInboundMessageSize = 4 * 1024 * 1024;
 
     /// <summary>
+    /// The <see cref="MaximumBatchSize"/> applied by <see cref="CreateHardened"/>: 1000 elements.
+    /// </summary>
+    public const int DefaultHardenedMaximumBatchSize = 1000;
+
+    /// <summary>
     /// Creates options pre-configured with conservative limits for a connection that can receive data
     /// from an untrusted or unauthenticated peer.
     /// </summary>
@@ -194,6 +221,8 @@ public sealed class JsonRpcOptions
     ///   (<see cref="DefaultHardenedMaximumInboundMessageSize"/>).</description></item>
     ///   <item><description><see cref="MaximumConcurrentRequests"/> = <c>Environment.ProcessorCount * 16</c>.</description></item>
     ///   <item><description><see cref="MaximumActiveEnumerations"/> = 128.</description></item>
+    ///   <item><description><see cref="MaximumBatchSize"/> = 1000
+    ///   (<see cref="DefaultHardenedMaximumBatchSize"/>).</description></item>
     ///   <item><description><see cref="MaximumPendingInboundRequests"/> = <c>Environment.ProcessorCount * 64</c>.</description></item>
     ///   <item><description><see cref="MaximumPendingInboundBytes"/> = 16 MiB.</description></item>
     ///   <item><description><see cref="ExposeExceptionDetails"/> = <see langword="false"/>.</description></item>
@@ -217,6 +246,7 @@ public sealed class JsonRpcOptions
         MaximumInboundMessageSize = DefaultHardenedMaximumInboundMessageSize,
         MaximumConcurrentRequests = Environment.ProcessorCount * 16,
         MaximumActiveEnumerations = 128,
+        MaximumBatchSize = DefaultHardenedMaximumBatchSize,
         MaximumPendingInboundRequests = Environment.ProcessorCount * 64,
         MaximumPendingInboundBytes = 16 * 1024 * 1024,
         ExposeExceptionDetails = false,

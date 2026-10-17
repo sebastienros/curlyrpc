@@ -19,7 +19,9 @@ namespace CurlyRpc;
 /// <item><description><c>ping</c> is always permitted (liveness probe before authentication).</description></item>
 /// <item><description><c>authenticate</c> validates the supplied token.</description></item>
 /// <item><description>A missing token returns a retryable error and keeps the connection open.</description></item>
-/// <item><description>An incorrect token returns an error and closes the connection.</description></item>
+/// <item><description>An incorrect token returns an error and closes the connection. The failure is
+/// permanent: every later request on the connection (including <c>ping</c>, another <c>authenticate</c>,
+/// or a later element of the same batch) is rejected, even if it carries the correct token.</description></item>
 /// <item><description>All other methods are rejected until authentication succeeds.</description></item>
 /// </list>
 /// </remarks>
@@ -36,6 +38,7 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
     private readonly string _pingMethodName;
     private JsonRpc? _connection;
     private volatile bool _authenticated;
+    private volatile bool _failed;
 
     /// <summary>Creates the middleware with a UTF-8 string secret.</summary>
     /// <param name="token">The shared secret a peer must present to authenticate.</param>
@@ -59,7 +62,7 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
     }
 
     /// <summary>Whether the peer has successfully authenticated on this connection.</summary>
-    public bool IsAuthenticated => _authenticated;
+    public bool IsAuthenticated => _authenticated && !_failed;
 
     /// <inheritdoc />
     public override ValueTask<JsonRpcDispatchDecision> OnRequestAsync(
@@ -77,6 +80,16 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
                 closeConnection: true));
         }
 
+        // A failed handshake is permanent. The connection is already closing, but requests queued
+        // behind the failure (for example later elements of the same batch) must not get another guess.
+        if (_failed)
+        {
+            return new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Reject(
+                AuthenticationFailedErrorCode,
+                "Authentication failed.",
+                closeConnection: true));
+        }
+
         if (string.Equals(context.Method, _pingMethodName, StringComparison.Ordinal))
         {
             return new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Respond(true));
@@ -87,7 +100,7 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
             return new ValueTask<JsonRpcDispatchDecision>(Authenticate(context.Parameters));
         }
 
-        return _authenticated
+        return IsAuthenticated
             ? new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Proceed)
             : new ValueTask<JsonRpcDispatchDecision>(JsonRpcDispatchDecision.Reject(
                 AuthenticationRequiredErrorCode,
@@ -114,12 +127,13 @@ public sealed class HandshakeAuthenticationMiddleware : JsonRpcInboundMiddleware
             CryptographicOperations.ZeroMemory(candidate);
         }
 
-        if (valid)
+        if (valid && !_failed)
         {
             _authenticated = true;
             return JsonRpcDispatchDecision.Respond(true);
         }
 
+        _failed = true;
         return JsonRpcDispatchDecision.Reject(
             AuthenticationFailedErrorCode,
             "Authentication failed.",

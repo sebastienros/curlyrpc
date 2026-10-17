@@ -55,7 +55,18 @@ public sealed class JsonRpcLoggingBridge : IDisposable
     {
         if (activity.Status == ActivityStatusCode.Error)
         {
-            logger.LogError(
+            // An unknown method is a caller mistake (or a probe by an untrusted peer), not a local
+            // failure: log it below Error so a peer cannot flood error logs with bogus calls.
+            LogLevel level = activity.GetTagItem("rpc.jsonrpc.error_code") is int code && code == JsonRpcErrorCodes.MethodNotFound
+                ? LogLevel.Warning
+                : LogLevel.Error;
+            if (!logger.IsEnabled(level))
+            {
+                return;
+            }
+
+            logger.Log(
+                level,
                 "JSON-RPC {Kind} call '{Method}' failed after {DurationMs:F2} ms: {Reason}",
                 activity.Kind,
                 activity.DisplayName,

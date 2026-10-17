@@ -16,6 +16,15 @@ public static class JsonRpcDiagnostics
     /// <summary>The <c>rpc.system</c> attribute value used on emitted spans and metrics.</summary>
     public const string RpcSystem = "jsonrpc";
 
+    /// <summary>
+    /// The <c>rpc.method</c> value (and server span name) used for an inbound request whose method is not
+    /// registered, following the OpenTelemetry convention for unbounded method names.
+    /// </summary>
+    public const string OtherMethodName = "_OTHER";
+
+    /// <summary>The longest request id recorded on a server span; longer ids are truncated.</summary>
+    internal const int MaximumRequestIdTagLength = 128;
+
     internal static readonly string Version =
         typeof(JsonRpcDiagnostics).Assembly.GetName().Version?.ToString() ?? "1.0.0";
 
@@ -80,7 +89,13 @@ public static class JsonRpcDiagnostics
             activity.SetTag("rpc.method", method);
             if (!requestId.IsNull)
             {
-                activity.SetTag("rpc.jsonrpc.request_id", requestId.ToString());
+                string requestIdTag = requestId.ToString();
+                if (requestIdTag.Length > MaximumRequestIdTagLength)
+                {
+                    requestIdTag = requestIdTag.Substring(0, MaximumRequestIdTagLength);
+                }
+
+                activity.SetTag("rpc.jsonrpc.request_id", requestIdTag);
             }
         }
 

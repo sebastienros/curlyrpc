@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using CurlyRpc.Tests.Harness;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -235,5 +236,73 @@ public sealed class AuthTests
         Assert.IsFalse(serverHandler.Disposed.IsCompleted);
 
         await server.DisposeAsync();
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Batch_WrongToken_StopsLaterGuessesAndNeverRunsProtectedMethods(bool correctGuessFirstInSameBatch)
+    {
+        var input = new PipeStream();
+        var output = new PipeStream();
+        var options = ServerOptions();
+        var middleware = (HandshakeAuthenticationMiddleware)options.InboundMiddleware!;
+        await using var server = new JsonRpc(new HeaderDelimitedMessageHandler(output, input, ownsStreams: true), options);
+        var peer = new HeaderDelimitedMessageHandler(input, output);
+        int calls = 0;
+        server.AddLocalRpcMethod("op", () => Interlocked.Increment(ref calls));
+        server.StartListening();
+
+        var elements = new List<string>
+        {
+            """{"jsonrpc":"2.0","method":"authenticate","params":["wrong"],"id":1}""",
+            """{"jsonrpc":"2.0","method":"op","id":2}""",
+            """{"jsonrpc":"2.0","method":"authenticate","params":["guess-2"],"id":3}""",
+            """{"jsonrpc":"2.0","method":"op","id":4}""",
+            $$"""{"jsonrpc":"2.0","method":"authenticate","params":["{{Token}}"],"id":5}""",
+            """{"jsonrpc":"2.0","method":"op","id":6}""",
+            """{"jsonrpc":"2.0","method":"op"}""",
+        };
+        if (correctGuessFirstInSameBatch)
+        {
+            // Even a guess that comes before any protected call cannot unlock it after a failure.
+            elements.Insert(1, $$"""{"jsonrpc":"2.0","method":"authenticate","params":["{{Token}}"],"id":7}""");
+        }
+
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes("[" + string.Join(',', elements) + "]"), CancellationToken.None);
+
+        // The failed handshake closes the connection: the peer reaches end-of-stream.
+        while (await peer.ReadMessageAsync(CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(5)) is not null)
+        {
+        }
+
+        await server.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, Volatile.Read(ref calls));
+        Assert.IsFalse(middleware.IsAuthenticated);
+    }
+
+    [TestMethod]
+    public async Task FailedHandshake_IsPermanent_ForRequestsAlreadyQueued()
+    {
+        var input = new PipeStream();
+        var output = new PipeStream();
+        var options = ServerOptions();
+        options.DisposeHandlerOnDispose = false;
+        var middleware = (HandshakeAuthenticationMiddleware)options.InboundMiddleware!;
+        await using var server = new JsonRpc(new HeaderDelimitedMessageHandler(output, input, ownsStreams: true), options);
+        var peer = new HeaderDelimitedMessageHandler(input, output);
+        int calls = 0;
+        server.AddLocalRpcMethod("op", () => Interlocked.Increment(ref calls));
+        server.StartListening();
+
+        // Pipelined separately: the correct token arrives right behind the wrong one.
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes("""{"jsonrpc":"2.0","method":"authenticate","params":["wrong"],"id":1}"""), CancellationToken.None);
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes($$"""{"jsonrpc":"2.0","method":"authenticate","params":["{{Token}}"],"id":2}"""), CancellationToken.None);
+        await peer.WriteMessageAsync(Encoding.UTF8.GetBytes("""{"jsonrpc":"2.0","method":"op","id":3}"""), CancellationToken.None);
+
+        await server.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(100);
+        Assert.AreEqual(0, Volatile.Read(ref calls));
+        Assert.IsFalse(middleware.IsAuthenticated);
     }
 }

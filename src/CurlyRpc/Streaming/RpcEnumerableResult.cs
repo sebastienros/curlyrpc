@@ -11,7 +11,15 @@ namespace CurlyRpc;
 internal abstract class RpcEnumerableResult
 {
     private readonly SemaphoreSlim _readGate = new(1, 1);
+    private CancellationTokenSource? _cancellation;
     private bool _disposed;
+
+    /// <summary>
+    /// Transfers ownership of the enumeration's cancellation source, whose token the handler and the
+    /// iterator observe. It must outlive the start request, so the enumeration cancels it before
+    /// waiting for an in-progress read on abort, completion or shutdown, and disposes it afterwards.
+    /// </summary>
+    public void AttachCancellation(CancellationTokenSource cancellation) => _cancellation = cancellation;
 
     /// <summary>
     /// Reads up to <paramref name="batchSize"/> elements, serialized with the connection options.
@@ -45,18 +53,39 @@ internal abstract class RpcEnumerableResult
     /// <summary>Disposes the underlying enumerator.</summary>
     public async ValueTask DisposeAsync()
     {
+        // Cancel first: a read blocked inside the iterator holds the gate and only unblocks once the
+        // iterator observes cancellation.
+        CancellationTokenSource? cancellation = _cancellation;
+        if (cancellation is not null)
+        {
+            try
+            {
+                await cancellation.CancelAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Already disposed, or an application cancellation callback threw.
+            }
+        }
+
         await _readGate.WaitAsync().ConfigureAwait(false);
+        bool disposedNow = false;
         try
         {
             if (!_disposed)
             {
                 _disposed = true;
+                disposedNow = true;
                 await DisposeCoreAsync().ConfigureAwait(false);
             }
         }
         finally
         {
             _readGate.Release();
+            if (disposedNow)
+            {
+                cancellation?.Dispose();
+            }
         }
     }
 
