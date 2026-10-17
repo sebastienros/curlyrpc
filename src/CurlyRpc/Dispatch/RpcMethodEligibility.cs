@@ -66,6 +66,93 @@ internal static class RpcMethodEligibility
         return true;
     }
 
+    private static bool IsPlumbingInterface(Type iface)
+        => iface == typeof(IDisposable)
+            || iface == typeof(IAsyncDisposable)
+            || (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEquatable<>));
+
+    private static int IndexOf(MethodInfo[] methods, MethodInfo method)
+    {
+        for (int i = 0; i < methods.Length; i++)
+        {
+            if (methods[i].MethodHandle == method.MethodHandle)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Returns the methods of <paramref name="contract"/> and every interface it inherits, excluding
+    /// accessors, generic methods and lifetime or equality plumbing, in the same spirit as
+    /// <see cref="IsExposableMember"/>.
+    /// </summary>
+    [RequiresUnreferencedCode("Enumerates the methods of the contract interface and its base interfaces.")]
+    public static List<MethodInfo> GetInterfaceContractMethods(Type contract)
+    {
+        var methods = new List<MethodInfo>();
+        foreach (Type iface in (Type[])[contract, .. contract.GetInterfaces()])
+        {
+            if (IsPlumbingInterface(iface))
+            {
+                continue;
+            }
+
+            foreach (MethodInfo method in iface.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!method.IsSpecialName && !method.IsGenericMethodDefinition)
+                {
+                    methods.Add(method);
+                }
+            }
+        }
+
+        return methods;
+    }
+
+    /// <summary>
+    /// Finds <typeparamref name="T"/> on <paramref name="method"/> or on its counterpart across
+    /// <paramref name="targetType"/>'s interface map: the interface methods a class method implements,
+    /// or the class method implementing an interface method. Attributes on interface declarations are
+    /// not inherited by implementations through ordinary reflection, so without this a
+    /// <see cref="JsonRpcIgnoreAttribute"/> placed on an interface would silently be ignored.
+    /// </summary>
+    [RequiresUnreferencedCode("Inspects the interface map of the target type.")]
+    public static T? FindMethodAttribute<T>(Type targetType, MethodInfo method)
+        where T : Attribute
+    {
+        if (method.GetCustomAttribute<T>() is T attribute)
+        {
+            return attribute;
+        }
+
+        if (targetType.IsInterface)
+        {
+            return null;
+        }
+
+        if (method.DeclaringType is { IsInterface: true } declaringInterface)
+        {
+            InterfaceMapping map = targetType.GetInterfaceMap(declaringInterface);
+            int index = IndexOf(map.InterfaceMethods, method);
+            return index >= 0 ? map.TargetMethods[index].GetCustomAttribute<T>() : null;
+        }
+
+        foreach (Type iface in targetType.GetInterfaces())
+        {
+            InterfaceMapping map = targetType.GetInterfaceMap(iface);
+            int index = IndexOf(map.TargetMethods, method);
+            if (index >= 0 && map.InterfaceMethods[index].GetCustomAttribute<T>() is T inherited)
+            {
+                return inherited;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Returns a description of why <paramref name="method"/>'s signature cannot be dispatched, or
     /// <see langword="null"/> when it can.

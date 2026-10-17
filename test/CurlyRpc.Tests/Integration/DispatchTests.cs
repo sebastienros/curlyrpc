@@ -435,6 +435,84 @@ public sealed class DispatchTests
         Assert.AreEqual(42, doubled);
     }
 
+    [TestMethod]
+    public async Task AddLocalRpcTarget_HonorsAttributesDeclaredOnInterfaces()
+    {
+        var (client, server) = CreatePair(out _, out _);
+        await using var _c = client;
+        await using var _s = server;
+
+        server.AddLocalRpcTarget(new AnnotatedContractService());
+        server.StartListening();
+        client.StartListening();
+
+        Assert.AreEqual(1, await client.InvokeAsync<int>("Public"));
+        Assert.AreEqual(2, await client.InvokeAsync<int>("contract/renamed"));
+        Assert.AreEqual(4, await client.InvokeAsync<int>("Extra"));
+
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<int>("Renamed"));
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<int>("Internal"));
+    }
+
+    [TestMethod]
+    public void AddLocalRpcTarget_MethodAndIgnoreAttributesTogether_Throw()
+    {
+        var (client, server) = CreatePair(out _, out _);
+        using var _c = client;
+        using var _s = server;
+
+        var ex = Assert.ThrowsExactly<ArgumentException>(() => server.AddLocalRpcTarget(new ConflictingAttributesService()));
+        StringAssert.Contains(ex.Message, "both [JsonRpcMethod] and [JsonRpcIgnore]");
+
+        ex = Assert.ThrowsExactly<ArgumentException>(() => server.AddLocalRpcTarget(new SplitConflictService()));
+        StringAssert.Contains(ex.Message, "both [JsonRpcMethod] and [JsonRpcIgnore]");
+    }
+
+    [TestMethod]
+    public async Task AddLocalRpcTarget_InterfaceScoped_ExposesOnlyContractMembers()
+    {
+        var (client, server) = CreatePair(out _, out _);
+        await using var _c = client;
+        await using var _s = server;
+
+        server.AddLocalRpcTarget(typeof(IScopedContract), new ScopedService());
+        server.StartListening();
+        client.StartListening();
+
+        Assert.AreEqual(1, await client.InvokeAsync<int>("Contract"));
+        Assert.AreEqual(2, await client.InvokeAsync<int>("Explicit"));
+        Assert.AreEqual(3, await client.InvokeAsync<int>("Base"));
+        Assert.AreEqual(5, await client.InvokeAsync<int>("scoped/renamed"));
+
+        // Public on the class but not part of the contract.
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<int>("NotInContract"));
+
+        // [JsonRpcIgnore] on the implementation still hides a contract member.
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<int>("IgnoredByImplementation"));
+
+        // Lifetime plumbing inherited by the contract is never exposed.
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<object>("Dispose"));
+        await Assert.ThrowsExactlyAsync<RemoteMethodNotFoundException>(
+            async () => await client.InvokeAsync<object>("get_Value"));
+    }
+
+    [TestMethod]
+    public void AddLocalRpcTarget_InterfaceScoped_RejectsInvalidContracts()
+    {
+        var (client, server) = CreatePair(out _, out _);
+        using var _c = client;
+        using var _s = server;
+
+        Assert.ThrowsExactly<ArgumentException>(() => server.AddLocalRpcTarget(typeof(ScopedService), new ScopedService()));
+        Assert.ThrowsExactly<ArgumentException>(() => server.AddLocalRpcTarget(typeof(IScopedContract), new Service()));
+        Assert.ThrowsExactly<ArgumentException>(() => server.AddLocalRpcTarget(typeof(IEnumerable<>), new List<int>()));
+    }
+
     private sealed class Service
     {
         public int Square(int value) => value * value;
@@ -444,6 +522,88 @@ public sealed class DispatchTests
 
         [JsonRpcIgnore]
         public int Secret() => 42;
+    }
+
+    public interface IAnnotatedContract
+    {
+        int Public();
+
+        [JsonRpcMethod("contract/renamed")]
+        int Renamed();
+
+        [JsonRpcIgnore]
+        int Internal();
+    }
+
+    private sealed class AnnotatedContractService : IAnnotatedContract
+    {
+        public int Public() => 1;
+
+        public int Renamed() => 2;
+
+        public int Internal() => 3;
+
+        public int Extra() => 4;
+    }
+
+    private sealed class ConflictingAttributesService
+    {
+        [JsonRpcMethod("name")]
+        [JsonRpcIgnore]
+        public int Method() => 1;
+    }
+
+    public interface IIgnoredContract
+    {
+        [JsonRpcIgnore]
+        int Method();
+    }
+
+    private sealed class SplitConflictService : IIgnoredContract
+    {
+        [JsonRpcMethod("name")]
+        public int Method() => 1;
+    }
+
+    public interface IScopedBase : IDisposable
+    {
+        int Base();
+    }
+
+    public interface IScopedContract : IScopedBase
+    {
+        int Value { get; }
+
+        int Contract();
+
+        int Explicit();
+
+        int IgnoredByImplementation();
+
+        [JsonRpcMethod("scoped/renamed")]
+        int Renamed();
+    }
+
+    private sealed class ScopedService : IScopedContract
+    {
+        public int Value => 0;
+
+        public int Contract() => 1;
+
+        int IScopedContract.Explicit() => 2;
+
+        public int Base() => 3;
+
+        [JsonRpcIgnore]
+        public int IgnoredByImplementation() => 4;
+
+        public int Renamed() => 5;
+
+        public int NotInContract() => 6;
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class Restricted : IDisposable, IAsyncDisposable

@@ -213,8 +213,10 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// <para>
     /// Every eligible public method becomes remotely callable. Expose only an object whose entire public
     /// surface is safe to invoke from the peer; apply <see cref="JsonRpcIgnoreAttribute"/> to methods that
-    /// must not be reachable, and prefer a dedicated facade over registering a broad domain object. For
-    /// untrusted peers, combine this with <see cref="JsonRpcOptions.InboundMiddleware"/> for authentication.
+    /// must not be reachable, and prefer
+    /// <see cref="AddLocalRpcTarget(Type, object, JsonRpcTargetOptions?)"/> (one interface) or a dedicated
+    /// facade over registering a broad domain object. For untrusted peers, combine this with
+    /// <see cref="JsonRpcOptions.InboundMiddleware"/> for authentication.
     /// </para>
     /// <para>
     /// A public instance method is eligible unless it is: declared on, or an override of a method declared
@@ -225,12 +227,16 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
     /// or takes <c>ref</c>/<c>out</c>/<c>in</c>, pointer or ref struct parameters. Methods inherited from
     /// base types are only included when <see cref="JsonRpcTargetOptions.IncludeInheritedMethods"/> is set.
     /// Applying <see cref="JsonRpcMethodAttribute"/> to an unsupported signature throws.
+    /// <see cref="JsonRpcIgnoreAttribute"/> and <see cref="JsonRpcMethodAttribute"/> are also honored when
+    /// they are declared on an interface method that the target method implements.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// Two eligible methods map to the same JSON-RPC name (for example overloads, or a name already
-    /// registered), or a method marked with <see cref="JsonRpcMethodAttribute"/> has an unsupported
-    /// signature. Nothing from <paramref name="target"/> is registered in that case.
+    /// registered), a method marked with <see cref="JsonRpcMethodAttribute"/> has an unsupported
+    /// signature, or a method is marked with both <see cref="JsonRpcMethodAttribute"/> and
+    /// <see cref="JsonRpcIgnoreAttribute"/>. Nothing from <paramref name="target"/> is registered in that
+    /// case.
     /// </exception>
     [RequiresUnreferencedCode(ReflectionDispatchMessage)]
     [RequiresDynamicCode(ReflectionDispatchMessage)]
@@ -247,22 +253,94 @@ public sealed partial class JsonRpc : IDisposable, IAsyncDisposable
             bindingFlags |= BindingFlags.DeclaredOnly;
         }
 
+        var candidates = new List<MethodInfo>();
+        foreach (var method in targetType.GetMethods(bindingFlags))
+        {
+            if (RpcMethodEligibility.IsExposableMember(targetType, method, options.IncludeInheritedMethods))
+            {
+                candidates.Add(method);
+            }
+        }
+
+        RegisterTargetMethods(target, targetType, candidates, options);
+    }
+
+    /// <summary>
+    /// Registers only the methods of the interface <paramref name="exposingMembersOn"/> (and the
+    /// interfaces it inherits) as local JSON-RPC handlers, dispatched to <paramref name="target"/>.
+    /// </summary>
+    /// <param name="exposingMembersOn">
+    /// The interface that defines the RPC contract. <paramref name="target"/> must implement it.
+    /// </param>
+    /// <param name="target">The object that implements the contract and receives the calls.</param>
+    /// <param name="options">Registration options, or <see langword="null"/> for defaults.</param>
+    /// <remarks>
+    /// <para>
+    /// This is the safest way to expose an object: any other public method of <paramref name="target"/>
+    /// stays unreachable, even when the class later gains new public members. Calls dispatch through the
+    /// interface, so explicit interface implementations work too.
+    /// </para>
+    /// <para>
+    /// Every method of the interface and of its base interfaces is exposed, except property and event
+    /// accessors, generic methods, and the members of <see cref="IDisposable"/>,
+    /// <see cref="IAsyncDisposable"/> and <see cref="IEquatable{T}"/>.
+    /// <see cref="JsonRpcTargetOptions.IncludeInheritedMethods"/> does not apply: base interfaces are part
+    /// of the contract. <see cref="JsonRpcIgnoreAttribute"/> and <see cref="JsonRpcMethodAttribute"/> are
+    /// honored on both the interface method and its implementation.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="exposingMembersOn"/> is not a closed interface type that <paramref name="target"/>
+    /// implements, or registration fails for any reason listed on
+    /// <see cref="AddLocalRpcTarget(object, JsonRpcTargetOptions?)"/>. Nothing is registered in that case.
+    /// </exception>
+    [RequiresUnreferencedCode(ReflectionDispatchMessage)]
+    [RequiresDynamicCode(ReflectionDispatchMessage)]
+    public void AddLocalRpcTarget(Type exposingMembersOn, object target, JsonRpcTargetOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(exposingMembersOn);
+        ArgumentNullException.ThrowIfNull(target);
+        EnsureNotListening();
+        options ??= new JsonRpcTargetOptions();
+
+        if (!exposingMembersOn.IsInterface || exposingMembersOn.ContainsGenericParameters)
+        {
+            throw new ArgumentException(
+                $"'{exposingMembersOn.Name}' must be a closed interface type.", nameof(exposingMembersOn));
+        }
+
+        if (!exposingMembersOn.IsInstanceOfType(target))
+        {
+            throw new ArgumentException(
+                $"'{target.GetType().Name}' does not implement '{exposingMembersOn.Name}'.", nameof(target));
+        }
+
+        RegisterTargetMethods(
+            target, target.GetType(), RpcMethodEligibility.GetInterfaceContractMethods(exposingMembersOn), options);
+    }
+
+    [RequiresUnreferencedCode(ReflectionDispatchMessage)]
+    [RequiresDynamicCode(ReflectionDispatchMessage)]
+    private void RegisterTargetMethods(object target, Type targetType, List<MethodInfo> candidates, JsonRpcTargetOptions options)
+    {
         // Validate the whole target before registering anything, so a rejected target leaves no
         // partial registration behind.
         var discovered = new Dictionary<string, MethodInfo>(StringComparer.Ordinal);
-        foreach (var method in targetType.GetMethods(bindingFlags))
+        foreach (var method in candidates)
         {
-            if (!RpcMethodEligibility.IsExposableMember(targetType, method, options.IncludeInheritedMethods))
+            var attribute = RpcMethodEligibility.FindMethodAttribute<JsonRpcMethodAttribute>(targetType, method);
+            if (RpcMethodEligibility.FindMethodAttribute<JsonRpcIgnoreAttribute>(targetType, method) is not null)
             {
+                if (attribute is not null)
+                {
+                    throw new ArgumentException(
+                        $"Method '{targetType.Name}.{method.Name}' is marked with both [JsonRpcMethod] and [JsonRpcIgnore].",
+                        nameof(target));
+                }
+
                 continue;
             }
 
-            if (method.GetCustomAttribute<JsonRpcIgnoreAttribute>() is not null)
-            {
-                continue;
-            }
-
-            var attribute = method.GetCustomAttribute<JsonRpcMethodAttribute>();
             if (RpcMethodEligibility.GetUnsupportedSignatureReason(method) is { } reason)
             {
                 if (attribute is not null)
