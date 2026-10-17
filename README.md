@@ -2,6 +2,10 @@
 
 # CurlyRpc
 
+[![NuGet](https://img.shields.io/nuget/v/CurlyRpc.svg?label=nuget.org)](https://www.nuget.org/packages/CurlyRpc)
+[![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json)
+[![MIT](https://img.shields.io/github/license/sebastienros/curlyrpc)](https://github.com/sebastienros/curlyrpc/blob/main/LICENSE)
+
 A minimal-dependency, AOT-friendly **JSON-RPC 2.0** library for .NET (`net8.0` and `net10.0`).
 
 CurlyRpc gives each side of a connection a full-duplex JSON-RPC 2.0 peer with a small, predictable surface:
@@ -52,6 +56,31 @@ Everything ships in a single NuGet package, **`CurlyRpc`**:
 
 Its only runtime dependency is `Microsoft.Extensions.Logging.Abstractions` (AOT- and trim-safe, and part
 of the ASP.NET Core shared framework). The source generator adds nothing to your runtime closure.
+
+```shell
+dotnet add package CurlyRpc
+```
+
+### NuGet feeds
+
+| Source | Purpose | Package feed |
+| --- | --- | --- |
+| Tagged releases (`v*`) | Stable releases. | [![NuGet.org stable version](https://img.shields.io/nuget/v/CurlyRpc.svg?label=nuget.org)](https://www.nuget.org/packages/CurlyRpc) |
+| [`main`](https://github.com/sebastienros/curlyrpc/tree/main) | Latest development changes. | [![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json) |
+
+### Preview packages
+
+Every successful build on `main` publishes a preview package to the
+[CurlyRpc feed on feedz.io](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json).
+Versions follow `1.0.0-preview-<run number>`, using the GitHub Actions build run number.
+These packages contain the latest development changes and are intended for testing before release.
+
+Add the preview feed alongside NuGet.org, then install the latest prerelease version:
+
+```shell
+dotnet nuget add source https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json --name curlyrpc-preview
+dotnet add package CurlyRpc --prerelease
+```
 
 ## Quick start
 
