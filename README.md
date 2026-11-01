@@ -3,7 +3,7 @@
 # CurlyRpc
 
 [![NuGet](https://img.shields.io/nuget/v/CurlyRpc.svg?label=nuget.org)](https://www.nuget.org/packages/CurlyRpc)
-[![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json)
+[![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://feedz.io/org/sebastienros/repository/curlyrpc/packages/CurlyRpc)
 [![MIT](https://img.shields.io/github/license/sebastienros/curlyrpc)](https://github.com/sebastienros/curlyrpc/blob/main/LICENSE)
 
 A minimal-dependency, AOT-friendly **JSON-RPC 2.0** library for .NET (`net8.0` and `net10.0`).
@@ -66,13 +66,13 @@ dotnet add package CurlyRpc
 | Source | Purpose | Package feed |
 | --- | --- | --- |
 | Tagged releases (`v*`) | Stable releases. | [![NuGet.org stable version](https://img.shields.io/nuget/v/CurlyRpc.svg?label=nuget.org)](https://www.nuget.org/packages/CurlyRpc) |
-| [`main`](https://github.com/sebastienros/curlyrpc/tree/main) | Latest development changes. | [![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json) |
+| [`main`](https://github.com/sebastienros/curlyrpc/tree/main) | Latest development changes. | [![Feedz preview version](https://img.shields.io/endpoint?url=https%3A%2F%2Ff.feedz.io%2Fsebastienros%2Fcurlyrpc%2Fshield%2FCurlyRpc%2Flatest)](https://feedz.io/org/sebastienros/repository/curlyrpc/packages/CurlyRpc) |
 
 ### Preview packages
 
 Every successful build on `main` publishes a preview package to the
 [CurlyRpc feed on feedz.io](https://f.feedz.io/sebastienros/curlyrpc/nuget/index.json).
-Versions follow `1.0.0-preview-<run number>`, using the GitHub Actions build run number.
+Versions follow `1.0.0-preview.<run number>`, using the GitHub Actions build run number.
 These packages contain the latest development changes and are intended for testing before release.
 
 Add the preview feed alongside NuGet.org, then install the latest prerelease version:
